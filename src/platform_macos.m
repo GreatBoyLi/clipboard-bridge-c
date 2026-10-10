@@ -3,6 +3,7 @@
 #include "platform.h"
 #include "protocol.h"
 #include "content.h"
+#include "files.h"
 #import <ImageIO/ImageIO.h>
 
 #include <stdlib.h>
@@ -95,6 +96,26 @@ int cb_platform_poll_content(cb_content *out)
         if(!ready_on_main_thread()) return -1;
         NSInteger version=pasteboard.changeCount;
         if(version==last_change_count) return 0;
+        /* 文件复制可能同时带路径文本/图标，优先读取真正的文件 URL。 */
+        NSArray<NSURL *> *urls=[pasteboard readObjectsForClasses:@[[NSURL class]]
+            options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}];
+        if(urls.count) {
+            int bad=urls.count>CB_FILE_COUNT;
+            if(!bad) {
+                out->files=calloc(urls.count,sizeof(char *));
+                if(!out->files) return -1;
+                out->file_count=(unsigned)urls.count;
+                for(NSUInteger i=0;i<urls.count;i++) {
+                    const char *path=urls[i].path.UTF8String;
+                    if(!path) {bad=1;break;}
+                    out->files[i]=strdup(path);if(!out->files[i]) {bad=1;break;}
+                }
+            }
+            if(pasteboard.changeCount!=version) bad=1;
+            last_change_count=version;
+            if(bad) {cb_content_free(out);return -1;}
+            return 1;
+        }
         NSString *text=[pasteboard stringForType:NSPasteboardTypeString];
         NSData *png=[pasteboard dataForType:NSPasteboardTypePNG];
         NSData *tiff=png?nil:[pasteboard dataForType:NSPasteboardTypeTIFF];
@@ -137,6 +158,21 @@ int cb_platform_poll_content(cb_content *out)
 }
 int cb_platform_set_content(const cb_content *c)
 {
+    if(c && c->files) {
+        if(!c->file_count || c->file_count>CB_FILE_COUNT || c->text || c->png) return -1;
+        @autoreleasepool {
+            if(!ready_on_main_thread()) return -1;
+            NSMutableArray<NSURL *> *urls=[NSMutableArray array];
+            for(unsigned i=0;i<c->file_count;i++) {
+                if(!c->files[i]) return -1;
+                NSString *path=[[NSString alloc] initWithUTF8String:c->files[i]];
+                if(!path || !path.isAbsolutePath) return -1;
+                [urls addObject:[NSURL fileURLWithPath:path]];
+            }
+            [pasteboard clearContents];BOOL ok=[pasteboard writeObjects:urls];
+            last_change_count=pasteboard.changeCount;return ok?0:-1;
+        }
+    }
     if(!c || (!c->text && !c->png) || c->text_length>CB_MAX_TEXT ||
        (!c->text && c->text_length) || (!c->png && c->png_length) ||
        !cb_valid_utf8((const unsigned char *)c->text,c->text_length)) return -1;
@@ -175,7 +211,7 @@ int cb_platform_poll(char **text,size_t *length)
 }
 int cb_platform_set(const char *text,size_t length)
 {
-    cb_content c={(char *)text,length,NULL,0};return cb_platform_set_content(&c);
+    cb_content c={(char *)text,length,NULL,0,NULL,0};return cb_platform_set_content(&c);
 }
 
 int cb_platform_random(unsigned char *out, size_t length)

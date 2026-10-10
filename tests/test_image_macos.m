@@ -16,7 +16,7 @@ int main(void) { @autoreleasepool {
     /* 独立测试剪贴板，绝不清空用户的通用剪贴板。 */
     pasteboard=[NSPasteboard pasteboardWithUniqueName];
     last_change_count=pasteboard.changeCount;
-    cb_content input={"图片🙂",10,(unsigned char *)cb_test_png,sizeof(cb_test_png)}, output={0};
+    cb_content input={"图片🙂",10,(unsigned char *)cb_test_png,sizeof(cb_test_png),NULL,0}, output={0};
     assert(cb_platform_set_content(&input)==0);
     assert([pasteboard stringForType:NSPasteboardTypeString]!=nil);
     assert([pasteboard dataForType:NSPasteboardTypePNG]!=nil);

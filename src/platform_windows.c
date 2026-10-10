@@ -19,10 +19,12 @@
 
 #include <windows.h>
 #include <bcrypt.h>
+#include <shellapi.h>
 
 #include "platform.h"
 #include "protocol.h"
 #include "content.h"
+#include "files.h"
 #include "image_windows.h"
 
 #include <limits.h>
@@ -242,6 +244,50 @@ static int read_text(char **text, size_t *length)
     return 1;
 }
 
+/* CF_HDROP 中是原生 UTF-16 路径；保留整个文件列表，不复制路径文本。 */
+static int read_files(cb_content *content)
+{
+    if(!IsClipboardFormatAvailable(CF_HDROP)) return 0;
+    HDROP drop=(HDROP)GetClipboardData(CF_HDROP);if(!drop) return -1;
+    UINT count=DragQueryFileW(drop,0xffffffffu,NULL,0);
+    if(!count || count>CB_FILE_COUNT) return -1;
+    content->files=calloc(count,sizeof(char *));if(!content->files) return -1;
+    content->file_count=count;
+    for(UINT i=0;i<count;i++) {
+        UINT n=DragQueryFileW(drop,i,NULL,0);if(!n || n>32767) return -1;
+        wchar_t *wide=malloc(((size_t)n+1)*sizeof(*wide));if(!wide) return -1;
+        if(DragQueryFileW(drop,i,wide,n+1)!=n) {free(wide);return -1;}
+        int bytes=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,wide,-1,NULL,0,NULL,NULL);
+        content->files[i]=bytes>0?malloc((size_t)bytes):NULL;
+        if(!content->files[i] || !WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,wide,-1,
+            content->files[i],bytes,NULL,NULL)) {free(wide);return -1;}
+        free(wide);
+    }
+    return 1;
+}
+static HGLOBAL prepare_files(const cb_content *content)
+{
+    if(!content->files || !content->file_count || content->file_count>CB_FILE_COUNT || content->text || content->png) return NULL;
+    size_t units=1;int lengths[CB_FILE_COUNT];
+    for(unsigned i=0;i<content->file_count;i++) {
+        if(!content->files[i]) return NULL;
+        lengths[i]=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,content->files[i],-1,NULL,0);
+        if(lengths[i]<=1 || lengths[i]>32768) return NULL;
+        units+=(size_t)lengths[i];
+    }
+    HGLOBAL handle=GlobalAlloc(GMEM_MOVEABLE|GMEM_ZEROINIT,sizeof(DROPFILES)+units*sizeof(wchar_t));
+    if(!handle) return NULL;
+    DROPFILES *drop=GlobalLock(handle);if(!drop) {GlobalFree(handle);return NULL;}
+    drop->pFiles=(DWORD)sizeof(DROPFILES);drop->fWide=TRUE;
+    wchar_t *paths=(wchar_t *)(drop+1);
+    for(unsigned i=0;i<content->file_count;i++) {
+        if(!MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,content->files[i],-1,paths,lengths[i])) {
+            GlobalUnlock(handle);GlobalFree(handle);return NULL;
+        }
+        paths+=lengths[i];
+    }
+    *paths=0;GlobalUnlock(handle);return handle;
+}
 int cb_platform_poll_content(cb_content *content)
 {
     DWORD current;
@@ -260,6 +306,12 @@ int cb_platform_poll_content(cb_content *content)
         change_notified = 0;
         CloseClipboard();
         return 0;
+    }
+    int file_result=read_files(content);
+    if(file_result!=0) {
+        last_sequence=GetClipboardSequenceNumber();change_notified=0;CloseClipboard();
+        if(file_result<0) cb_content_free(content);
+        return file_result;
     }
     image_result = cb_windows_read_image(png_format,
         &content->png, &content->png_length);
@@ -316,13 +368,16 @@ static HGLOBAL prepare_text(const char *text, size_t length)
 
 int cb_platform_set_content(const cb_content *content)
 {
-    HGLOBAL text_handle = NULL, png_handle = NULL, dib_handle = NULL;
+    HGLOBAL text_handle = NULL, png_handle = NULL, dib_handle = NULL, file_handle=NULL;
     int result = -1;
     DWORD before_close, after_close;
     if (!ready_on_owner_thread() || !content ||
-        (!content->text && !content->png) ||
+        (!content->text && !content->png && !content->files) ||
         (!content->text && content->text_length) ||
         (!content->png && content->png_length)) return -1;
+    if(content->files) {
+        file_handle=prepare_files(content);if(!file_handle) goto done;
+    }
     if (content->text) {
         if (content->text_length > CB_MAX_TEXT || content->text_length > INT_MAX ||
             !cb_valid_utf8((const unsigned char *)content->text,
@@ -335,6 +390,11 @@ int cb_platform_set_content(const cb_content *content)
             content->png_length, &png_handle, &dib_handle) != 0) goto done;
     if (open_clipboard_with_retry() != 0) goto done;
     if (!EmptyClipboard()) { CloseClipboard(); goto done; }
+    if(file_handle) {
+        if(!SetClipboardData(CF_HDROP,file_handle)) goto close;
+        file_handle=NULL;
+        /* 未提供剪切格式，资源管理器默认按复制处理。 */
+    }
     if (png_handle) {
         if (!SetClipboardData(png_format, png_handle)) goto close;
         png_handle = NULL;
@@ -355,6 +415,7 @@ close:
         after_close : before_close;
     change_notified = 0;
 done:
+    if (file_handle) GlobalFree(file_handle);
     if (text_handle) GlobalFree(text_handle);
     if (png_handle) GlobalFree(png_handle);
     if (dib_handle) GlobalFree(dib_handle);

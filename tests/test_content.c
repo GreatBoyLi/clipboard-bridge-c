@@ -11,7 +11,7 @@ int main(void) {
     assert(!cb_png_valid(png,24));
     assert(!cb_image_dimensions(0,1));
     assert(!cb_image_dimensions(16384,16384));
-    cb_content c={"中文🙂",10,(unsigned char *)png,sizeof(png)}, out={0};
+    cb_content c={"中文🙂",10,(unsigned char *)png,sizeof(png),NULL,0}, out={0};
     unsigned char *bytes=NULL;size_t n=0;
     assert(cb_content_pack(&c,&bytes,&n)==0);
     assert(cb_content_unpack(bytes,n,&out)==0);

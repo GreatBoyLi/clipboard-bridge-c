@@ -132,6 +132,18 @@ int main(void)
     cb_encode_header(wire,&original);assert(cb_decode_header(wire,&decoded)<0);
     original.length=1;original.sequence=1;
     cb_encode_header(wire,&original);assert(cb_decode_header(wire,&decoded)<0);
+    /* 新文件消息边界：拒绝空块、过大清单、零序号和损坏校验长度。 */
+    original=(cb_header){CB_FILES_BEGIN,1,4};
+    cb_encode_header(wire,&original);assert(cb_decode_header(wire,&decoded)==0);
+    original.length=32769;cb_encode_header(wire,&original);assert(cb_decode_header(wire,&decoded)<0);
+    original=(cb_header){CB_FILES_CHUNK,1,16384};
+    cb_encode_header(wire,&original);assert(cb_decode_header(wire,&decoded)==0);
+    original.length=0;cb_encode_header(wire,&original);assert(cb_decode_header(wire,&decoded)<0);
+    original=(cb_header){CB_FILES_CREDIT,0,0};
+    cb_encode_header(wire,&original);assert(cb_decode_header(wire,&decoded)<0);
+    original=(cb_header){CB_FILES_END,1,256};
+    cb_encode_header(wire,&original);assert(cb_decode_header(wire,&decoded)==0);
+    original.length=5;cb_encode_header(wire,&original);assert(cb_decode_header(wire,&decoded)<0);
     puts("Protocol tests passed");
     return 0;
 }

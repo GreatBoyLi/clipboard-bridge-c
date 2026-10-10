@@ -34,14 +34,31 @@ cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
   ..\src\protocol.c ^
   ..\src\net.c ^
   ..\src\content.c ^
+  ..\src\files.c ^
   ..\src\image_windows.c ^
   ..\src\platform_windows.c ^
   ..\src\scroll_windows.c ^
   ..\src\caps_windows.c ^
   ..\src\main.c ^
   /Fe:clipboard-bridge.exe ^
-  /link ws2_32.lib user32.lib bcrypt.lib ole32.lib windowscodecs.lib gdi32.lib
+  /link ws2_32.lib user32.lib bcrypt.lib ole32.lib windowscodecs.lib gdi32.lib shell32.lib
 
+if errorlevel 1 goto failed
+
+REM File stream roundtrip uses a private test directory; no clipboard access.
+cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /D_CRT_SECURE_NO_WARNINGS /I..\src ^
+  ..\src\protocol.c ..\src\files.c ..\tests\test_files.c ^
+  /Fe:test_files.exe /link user32.lib bcrypt.lib
+if errorlevel 1 goto failed
+test_files.exe
+if errorlevel 1 goto failed
+
+REM Native CF_HDROP conversion only; never opens the system clipboard.
+cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /D_CRT_SECURE_NO_WARNINGS /I..\src ^
+  ..\src\protocol.c ..\src\content.c ..\src\image_windows.c ..\tests\test_files_windows.c ^
+  /Fe:test_files_windows.exe /link user32.lib bcrypt.lib ole32.lib windowscodecs.lib gdi32.lib shell32.lib
+if errorlevel 1 goto failed
+test_files_windows.exe
 if errorlevel 1 goto failed
 
 REM Build protocol tests.

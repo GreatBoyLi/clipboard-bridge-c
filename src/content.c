@@ -10,7 +10,11 @@ static void write32(unsigned char *p,uint32_t n) {
     p[2]=(unsigned char)(n>>8);p[3]=(unsigned char)n;
 }
 void cb_content_free(cb_content *c) {
-    if(c) {free(c->text);free(c->png);memset(c,0,sizeof(*c));}
+    if(c) {
+        free(c->text);free(c->png);
+        if(c->files) {for(unsigned i=0;i<c->file_count;i++) free(c->files[i]);free(c->files);}
+        memset(c,0,sizeof(*c));
+    }
 }
 int cb_image_dimensions(uint32_t w,uint32_t h) {
     return w && h && w<=16384 && h<=16384 && (uint64_t)w*h<=CB_MAX_PIXELS;

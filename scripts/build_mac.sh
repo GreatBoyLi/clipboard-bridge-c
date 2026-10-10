@@ -27,6 +27,7 @@ clang \
   -Isrc \
   src/protocol.c \
   src/content.c \
+  src/files.c \
   src/net.c \
   src/platform_macos.m \
   src/keyboard_map.c \

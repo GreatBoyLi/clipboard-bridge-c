@@ -65,7 +65,7 @@ int main(void) {
             close(sockets[1]);_exit(0);
         }
         close(sockets[1]);
-        cb_content image={NULL,0,(unsigned char *)cb_test_png,sizeof(cb_test_png)};
+        cb_content image={NULL,0,(unsigned char *)cb_test_png,sizeof(cb_test_png),NULL,0};
         unsigned char *body=NULL;size_t length=0;
         assert(cb_content_pack(&image,&body,&length)==0);
         if(mode==2) {body[8]=2;} // PNG 声明长度远超 20 MiB。

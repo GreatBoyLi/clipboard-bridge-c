@@ -105,6 +105,14 @@ int cb_decode_header(
     case CB_CAPS_ACTION:
     case CB_CAPS_RESULT:
         return header->length == 1 && header->sequence != 0 ? 0 : -1;
+    case CB_FILES_BEGIN:
+        return header->length>=4 && header->length<=32768 && header->sequence!=0 ? 0 : -1;
+    case CB_FILES_CHUNK:
+        return header->length>0 && header->length<=16384 && header->sequence!=0 ? 0 : -1;
+    case CB_FILES_END:
+        return header->length>=4 && header->length<=256 && header->length%4==0 && header->sequence!=0 ? 0 : -1;
+    case CB_FILES_CREDIT:
+        return header->length==0 && header->sequence!=0 ? 0 : -1;
     case CB_IMAGE_BEGIN:
         return header->length == 12 && header->sequence != 0 ? 0 : -1;
     case CB_IMAGE_CHUNK:

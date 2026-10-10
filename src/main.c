@@ -10,7 +10,7 @@
  *   6. 连接中断后重新等待或主动重连。
  *
  * 剪贴板支持纯文本及 PNG 图片，同一次复制可同时保留两种格式。
- * Mac 可选键盘映射及两指速度控制；不传输文件内容。
+ * 支持普通文件分块同步；Mac 可选键盘映射及两指速度控制。
  *
  * 网络数据本身没有额外加密：
  * 正式使用时必须通过 Tailscale 地址连接。
@@ -25,6 +25,7 @@
 #include "platform.h"
 #include "protocol.h"
 #include "content.h"
+#include "files.h"
 #include "caps_action.h"
 #ifdef _WIN32
 #include "caps_remote.h"
@@ -454,6 +455,12 @@ static void run_session(cb_socket connection)
     size_t queued_length = 0;
     /* 图片分块交替收发，避免两端同时发送大内容时填满 TCP 缓冲区。
      * 接收缓冲区只在 BEGIN 的尺寸检查通过后分配，断线立即释放。 */
+    cb_content queued_files={0};
+    cb_file_tx file_tx={0};cb_file_rx file_rx={0};
+    int files_sending=0,files_chunk_ready=0;
+    uint32_t files_receiving_sequence=0;
+    uint64_t files_receiving_deadline=0;
+    unsigned files_sent_progress=0,files_received_progress=0;
     int queued_image=0;
     unsigned char *sending_image=NULL,*receiving_image=NULL;
     size_t sending_size=0,sending_offset=0,receiving_size=0,receiving_offset=0;
@@ -510,7 +517,11 @@ static void run_session(cb_socket connection)
         if(receiving_image && now>=receiving_deadline) {
             fprintf(stderr,"Image transfer progress timed out.\n");break;
         }
-        int ready = cb_net_wait(connection, 0, (sending_image && chunk_ready) ? 0 : POLL_MS);
+        if(file_rx.directory && now>=files_receiving_deadline) {
+            fprintf(stderr,"File transfer progress timed out.\n");break;
+        }
+        int ready = cb_net_wait(connection, 0,
+            ((sending_image && chunk_ready) || (files_sending && files_chunk_ready)) ? 0 : POLL_MS);
 
         if (ready < 0) {
             break;
@@ -568,11 +579,42 @@ static void run_session(cb_socket connection)
                 valid=0;
 #endif
                 break;
+            case CB_FILES_BEGIN:
+                if(file_rx.directory || receiving_image || header.sequence!=next_sequence(incoming_sequence) ||
+                   cb_file_rx_begin(&file_rx,data,header.length)!=0) {valid=0;break;}
+                files_receiving_sequence=header.sequence;files_received_progress=0;
+                files_receiving_deadline=cb_net_now()+PEER_TIMEOUT_MS;
+                printf("Receiving %u files (%llu bytes).\n",file_rx.count,(unsigned long long)file_rx.total);
+                if(send_frame(connection,CB_FILES_CREDIT,header.sequence,NULL,0)!=0) valid=0;
+                last_sent=cb_net_now();break;
+            case CB_FILES_CHUNK:
+                if(!file_rx.directory || header.sequence!=files_receiving_sequence ||
+                   cb_file_rx_chunk(&file_rx,data,header.length)!=0) {valid=0;break;}
+                files_receiving_deadline=cb_net_now()+PEER_TIMEOUT_MS;
+                {unsigned pct=file_rx.total?(unsigned)(file_rx.done*100/file_rx.total):100;
+                 if(pct/10>files_received_progress) {files_received_progress=pct/10;printf("Receiving files: %u%%\n",pct);}}
+                if(send_frame(connection,CB_FILES_CREDIT,header.sequence,NULL,0)!=0) valid=0;
+                last_sent=cb_net_now();break;
+            case CB_FILES_END: {
+                if(!file_rx.directory || header.sequence!=files_receiving_sequence ||
+                   cb_file_rx_end(&file_rx,data,header.length)!=0) {valid=0;break;}
+                cb_content content={0};content.files=file_rx.paths;content.file_count=file_rx.count;
+                if(cb_platform_set_content(&content)!=0) {valid=0;break;}
+                file_rx.published=1;cb_file_rx_close(&file_rx);
+                incoming_sequence=header.sequence;
+                puts("Files verified and clipboard ready for paste.");
+                if(send_frame(connection,CB_ACK,header.sequence,NULL,0)!=0) valid=0;
+                last_sent=cb_net_now();break;
+            }
+            case CB_FILES_CREDIT:
+                if(!files_sending || files_chunk_ready || header.sequence!=pending_ack) valid=0;
+                else {files_chunk_ready=1;ack_deadline=cb_net_now()+PEER_TIMEOUT_MS;}
+                break;
             case CB_IMAGE_BEGIN: {
                 uint32_t flags=((uint32_t)data[0]<<24)|((uint32_t)data[1]<<16)|((uint32_t)data[2]<<8)|data[3];
                 uint32_t text=((uint32_t)data[4]<<24)|((uint32_t)data[5]<<16)|((uint32_t)data[6]<<8)|data[7];
                 uint32_t png=((uint32_t)data[8]<<24)|((uint32_t)data[9]<<16)|((uint32_t)data[10]<<8)|data[11];
-                if(receiving_image || header.sequence!=next_sequence(incoming_sequence) ||
+                if(file_rx.directory || receiving_image || header.sequence!=next_sequence(incoming_sequence) ||
                    flags>1 || (!flags && text) || text>CB_MAX_TEXT || png<45 || png>CB_MAX_PNG) {valid=0;break;}
                 receiving_size=CB_CONTENT_META+(size_t)text+png;
                 receiving_image=malloc(receiving_size);
@@ -614,7 +656,7 @@ static void run_session(cb_socket connection)
                  * 一个连接内的文本序号必须连续。
                  * TCP 会保证顺序，因此乱序消息属于协议错误。
                  */
-                if (receiving_image || header.sequence != next_sequence(incoming_sequence) ||
+                if (file_rx.directory || receiving_image || header.sequence != next_sequence(incoming_sequence) ||
                     !cb_valid_utf8(data, header.length)) {
                     valid = 0;
                     break;
@@ -647,7 +689,7 @@ static void run_session(cb_socket connection)
                 break;
 
             case CB_ACK:
-                if (sending_image || pending_ack == 0 || header.sequence != pending_ack) {
+                if (files_sending || sending_image || pending_ack == 0 || header.sequence != pending_ack) {
                     valid = 0;
                     break;
                 }
@@ -735,8 +777,13 @@ static void run_session(cb_socket connection)
         int paste_requested = cb_keyboard_take_paste();
         if (!paste_waiting && paste_requested) paste_waiting = 1;
         int changed = cb_platform_poll_content(&local);
+        int local_files=local.files!=NULL;
         int local_image=local.png!=NULL;
-        if(changed==1 && local_image) {
+        if(changed!=0) cb_content_free(&queued_files);
+        if(changed==1 && local_files) {
+            free(queued_text);queued_text=NULL;queued_length=0;
+            queued_files=local;memset(&local,0,sizeof(local));
+        } else if(changed==1 && local_image) {
             unsigned char *body=NULL;
             if(cb_content_pack(&local,&body,&local_length)!=0) changed=-1;
             else local_text=(char *)body;
@@ -745,7 +792,7 @@ static void run_session(cb_socket connection)
         }
         cb_content_free(&local);
 
-        if (changed == 1) {
+        if (changed == 1 && !local_files) {
             /*
              * 在公共层再次检查，避免不同平台实现
              * 意外产生不符合协议的文本。
@@ -773,6 +820,39 @@ static void run_session(cb_socket connection)
 
         free(local_text);
 
+        if(queued_files.files && pending_ack==0) {
+            unsigned char *manifest=NULL;size_t meta_length=0;
+            int opened=cb_file_tx_open(&file_tx,(const char *const *)queued_files.files,
+                queued_files.file_count,&manifest,&meta_length);
+            cb_content_free(&queued_files);
+            if(opened!=0) {
+                fprintf(stderr,"Files rejected: only readable regular files with unique portable names, up to 64 files / 1 GiB.\n");
+                if(paste_waiting) cb_keyboard_finish_paste(0);
+                paste_waiting=0;
+            } else {
+                outgoing_sequence=next_sequence(outgoing_sequence);pending_ack=outgoing_sequence;
+                int sent=send_frame(connection,CB_FILES_BEGIN,pending_ack,manifest,(uint32_t)meta_length);
+                free(manifest);if(sent!=0) break;
+                files_sending=1;files_chunk_ready=0;files_sent_progress=0;
+                last_sent=cb_net_now();ack_deadline=last_sent+PEER_TIMEOUT_MS;
+                printf("Sending %u files (%llu bytes).\n",file_tx.count,(unsigned long long)file_tx.total);
+            }
+        }
+        if(files_sending && files_chunk_ready) {
+            unsigned char block[CB_FILE_CHUNK];size_t length=0;
+            int chunk=cb_file_tx_chunk(&file_tx,block,&length);
+            if(chunk<0) {fprintf(stderr,"File read failed or source changed; cancelling transfer.\n");break;}
+            if(chunk==0) {
+                if(cb_file_tx_end(&file_tx,block,&length)!=0 ||
+                   send_frame(connection,CB_FILES_END,pending_ack,block,(uint32_t)length)!=0) break;
+                cb_file_tx_close(&file_tx);files_sending=0;
+            } else {
+                if(send_frame(connection,CB_FILES_CHUNK,pending_ack,block,(uint32_t)length)!=0) break;
+                unsigned pct=file_tx.total?(unsigned)(file_tx.done*100/file_tx.total):100;
+                if(pct/10>files_sent_progress) {files_sent_progress=pct/10;printf("Sending files: %u%%\n",pct);}
+            }
+            files_chunk_ready=0;last_sent=cb_net_now();ack_deadline=last_sent+PEER_TIMEOUT_MS;
+        }
         if (queued_text != NULL && pending_ack == 0) {
             outgoing_sequence = next_sequence(outgoing_sequence);
             pending_ack=outgoing_sequence;
@@ -803,7 +883,7 @@ static void run_session(cb_socket connection)
         /* 必须在处理最新剪贴板及发送队列之后放行，不能在旧 ACK 到来时提前粘贴。
          * 没有 Mac 新文字时，不发送 TEXT，直接使用 Windows 当前剪贴板。
          */
-        if (paste_waiting && queued_text == NULL && pending_ack == 0) {
+        if (paste_waiting && queued_text == NULL && queued_files.files == NULL && pending_ack == 0) {
             cb_keyboard_finish_paste(1);
             paste_waiting = 0;
         }
@@ -828,6 +908,7 @@ session_done:
     if(scroll_enabled) (void)cb_scroll_set(0);
     cb_keyboard_connected(0);
     free(queued_text);free(sending_image);free(receiving_image);
+    cb_content_free(&queued_files);cb_file_tx_close(&file_tx);cb_file_rx_close(&file_rx);
 
     puts("Disconnected. Pending old clipboard content will not be replayed.");
 }

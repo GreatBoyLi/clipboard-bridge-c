@@ -12,6 +12,9 @@ typedef struct {
     size_t text_length;
     unsigned char *png;
     size_t png_length;
+    /* 文件快照与文本/图片互斥；UTF-8 原生绝对路径，不作为网络路径发送。 */
+    char **files;
+    unsigned file_count;
 } cb_content;
 /* 释放由 poll/unpack 分配的快照；调用后全部字段清零。 */
 void cb_content_free(cb_content *content);
