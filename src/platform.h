@@ -2,6 +2,7 @@
 #define CB_PLATFORM_H
 
 #include <stddef.h>
+#include "content.h"
 
 /*
  * 初始化系统剪贴板接口。

@@ -22,6 +22,8 @@
 
 #include "platform.h"
 #include "protocol.h"
+#include "content.h"
+#include "image_windows.h"
 
 #include <limits.h>
 #include <stdlib.h>
@@ -41,6 +43,7 @@ static int change_notified = 0;
 
 /* 记录窗口类是否由本模块注册，以便退出时释放。 */
 static int class_registered = 0;
+static UINT png_format = 0;
 
 static const wchar_t WINDOW_CLASS_NAME[] =
     L"ClipboardBridgeMessageWindow";
@@ -112,6 +115,9 @@ int cb_platform_init(void)
     }
 
     owner_thread = GetCurrentThreadId();
+    if (cb_windows_image_init() != 0) { owner_thread = 0; return -1; }
+    png_format = RegisterClipboardFormatW(L"PNG");
+    if (png_format == 0) { cb_platform_close(); return -1; }
 
     WNDCLASSW window_class;
     memset(&window_class, 0, sizeof(window_class));
@@ -123,7 +129,7 @@ int cb_platform_init(void)
     if (RegisterClassW(&window_class) != 0) {
         class_registered = 1;
     } else if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        owner_thread = 0;
+        cb_platform_close();
         return -1;
     }
 
@@ -162,6 +168,8 @@ int cb_platform_init(void)
 
 void cb_platform_close(void)
 {
+    /* COM 和隐藏窗口必须由初始化线程释放。 */
+    if (owner_thread != 0 && GetCurrentThreadId() != owner_thread) return;
     if (clipboard_window != NULL) {
         RemoveClipboardFormatListener(clipboard_window);
         DestroyWindow(clipboard_window);
@@ -176,6 +184,8 @@ void cb_platform_close(void)
         class_registered = 0;
     }
 
+    cb_windows_image_close();
+    png_format = 0;
     owner_thread = 0;
     last_sequence = 0;
     change_notified = 0;
@@ -194,277 +204,169 @@ void cb_platform_reset(void)
     change_notified = 0;
 }
 
-int cb_platform_poll(char **text, size_t *length)
+/* 文本和图像读取均由调用方在同一次 OpenClipboard 内完成。 */
+static int read_text(char **text, size_t *length)
 {
-    if (text == NULL || length == NULL) {
-        return -1;
+    HGLOBAL handle;
+    const wchar_t *wide;
+    size_t units = 0, capacity;
+    int bytes = 0;
+    char *buffer;
+    *text = NULL; *length = 0;
+    if (!IsClipboardFormatAvailable(CF_UNICODETEXT)) return 0;
+    handle = (HGLOBAL)GetClipboardData(CF_UNICODETEXT);
+    if (!handle) return -1;
+    capacity = (size_t)GlobalSize(handle) / sizeof(wchar_t);
+    wide = GlobalLock(handle);
+    if (!wide) return -1;
+    while (units < capacity && units <= CB_MAX_TEXT && wide[units] != L'\0') ++units;
+    if (units == capacity || units > CB_MAX_TEXT || units > INT_MAX) {
+        GlobalUnlock(handle); return -1;
     }
-
-    *text = NULL;
-    *length = 0;
-
-    if (!ready_on_owner_thread()) {
-        return -1;
-    }
-
-    pump_messages();
-
-    DWORD current = GetClipboardSequenceNumber();
-
-    /*
-     * 通知用于及时发现变化，版本号也作为兜底。
-     * 未变化时不打开剪贴板，不进行编码转换。
-     */
-    if (!change_notified && current == last_sequence) {
-        return 0;
-    }
-
-    if (current == last_sequence) {
-        change_notified = 0;
-        return 0;
-    }
-
-    if (open_clipboard_with_retry() != 0) {
-        /* 不更新版本，下一轮继续尝试读取。 */
-        return -1;
-    }
-
-    /*
-     * 打开后重新记录版本，避免等待期间其他应用修改内容。
-     * 此后系统剪贴板处于本进程的打开状态。
-     */
-    current = GetClipboardSequenceNumber();
-
-    if (!IsClipboardFormatAvailable(CF_UNICODETEXT)) {
-        /*
-         * 图片、文件等格式当前不处理。
-         * 记录版本，避免对同一内容反复读取。
-         */
-        last_sequence = current;
-        change_notified = 0;
-        CloseClipboard();
-        return 0;
-    }
-
-    /*
-     * GetClipboardData 返回系统管理的内存。
-     * 本程序只能读取，不能 GlobalFree 这个句柄。
-     */
-    HGLOBAL handle = (HGLOBAL)GetClipboardData(CF_UNICODETEXT);
-
-    if (handle == NULL) {
-        CloseClipboard();
-        return -1;
-    }
-
-    /*
-     * 某些应用延迟提供剪贴板内容，GetClipboardData
-     * 可能触发实际生成，因此再次记录版本。
-     */
-    current = GetClipboardSequenceNumber();
-
-    SIZE_T capacity = GlobalSize(handle);
-    const wchar_t *wide_text = GlobalLock(handle);
-
-    if (wide_text == NULL) {
-        CloseClipboard();
-        return -1;
-    }
-
-    /*
-     * 在系统提供的缓冲区范围内寻找结束符，
-     * 不直接使用 wcslen，避免异常数据导致越界读取。
-     */
-    size_t max_units = (size_t)(capacity / sizeof(wchar_t));
-    size_t units = 0;
-
-    while (units < max_units && wide_text[units] != L'\0') {
-        ++units;
-    }
-
-    if (units == max_units || units > CB_MAX_TEXT) {
-        GlobalUnlock(handle);
-        last_sequence = current;
-        change_notified = 0;
-        CloseClipboard();
-        return -1;
-    }
-
-    int utf8_length = 0;
-
-    if (units != 0) {
-        /*
-         * 先计算输出长度。
-         * WC_ERR_INVALID_CHARS 拒绝不合法的 UTF-16，
-         * 不把异常输入静默替换成其他字符。
-         */
-        utf8_length = WideCharToMultiByte(
-            CP_UTF8,
-            WC_ERR_INVALID_CHARS,
-            wide_text,
-            (int)units,
-            NULL,
-            0,
-            NULL,
-            NULL
-        );
-
-        if (utf8_length <= 0 ||
-            (unsigned)utf8_length > CB_MAX_TEXT) {
-            GlobalUnlock(handle);
-            last_sequence = current;
-            change_notified = 0;
-            CloseClipboard();
-            return -1;
+    if (units) {
+        bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+            wide, (int)units, NULL, 0, NULL, NULL);
+        if (bytes <= 0 || (unsigned)bytes > CB_MAX_TEXT) {
+            GlobalUnlock(handle); return -1;
         }
     }
-
-    char *buffer = malloc((size_t)utf8_length + 1);
-
-    if (buffer == NULL) {
-        GlobalUnlock(handle);
-        CloseClipboard();
-
-        /* 内存不足时允许下一轮重试。 */
-        return -1;
+    buffer = malloc((size_t)bytes + 1u);
+    if (!buffer) { GlobalUnlock(handle); return -1; }
+    if (units && WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+            wide, (int)units, buffer, bytes, NULL, NULL) != bytes) {
+        free(buffer); GlobalUnlock(handle); return -1;
     }
-
-    if (units != 0) {
-        int converted = WideCharToMultiByte(
-            CP_UTF8,
-            WC_ERR_INVALID_CHARS,
-            wide_text,
-            (int)units,
-            buffer,
-            utf8_length,
-            NULL,
-            NULL
-        );
-
-        if (converted != utf8_length) {
-            free(buffer);
-            GlobalUnlock(handle);
-            CloseClipboard();
-            return -1;
-        }
-    }
-
-    buffer[utf8_length] = '\0';
-
+    buffer[bytes] = '\0';
     GlobalUnlock(handle);
+    *text = buffer; *length = (size_t)bytes;
+    return 1;
+}
 
-    /*
-     * 保存读取时的版本，而不是关闭后的最新版本。
-     * 如果其他应用随后复制了新内容，下一轮仍能检测到。
-     */
+int cb_platform_poll_content(cb_content *content)
+{
+    DWORD current;
+    int image_result, text_result;
+    if (!content) return -1;
+    memset(content, 0, sizeof(*content));
+    if (!ready_on_owner_thread()) return -1;
+    pump_messages();
+    current = GetClipboardSequenceNumber();
+    if (current == last_sequence) { change_notified = 0; return 0; }
+    if (open_clipboard_with_retry() != 0) return -1;
+    /* 系统可能按需从 DIBV5 派生其它位图格式并改变版本。
+     * 在剪贴板锁内检查所有者：仍由本窗口拥有的内容都是远端写入，不能回传。 */
+    if (GetClipboardOwner() == clipboard_window) {
+        last_sequence = GetClipboardSequenceNumber();
+        change_notified = 0;
+        CloseClipboard();
+        return 0;
+    }
+    image_result = cb_windows_read_image(png_format,
+        &content->png, &content->png_length);
+    text_result = image_result < 0 ? -1 : read_text(
+        &content->text, &content->text_length);
+    /* 延迟格式生成会更新版本，在全部读取完成后保存同一快照版本。 */
+    current = GetClipboardSequenceNumber();
+    CloseClipboard();
     last_sequence = current;
     change_notified = 0;
+    if (image_result < 0 || text_result < 0) {
+        cb_content_free(content); return -1;
+    }
+    return image_result > 0 || text_result > 0 ? 1 : 0;
+}
+
+int cb_platform_poll(char **text, size_t *length)
+{
+    cb_content content;
+    int result;
+    if (!text || !length) return -1;
+    *text = NULL; *length = 0;
+    result = cb_platform_poll_content(&content);
+    if (result > 0 && content.text) {
+        *text = content.text; *length = content.text_length;
+        content.text = NULL;
+    } else if (result > 0) result = 0;
+    cb_content_free(&content);
+    return result;
+}
+
+static HGLOBAL prepare_text(const char *text, size_t length)
+{
+    int units = 0;
+    HGLOBAL handle;
+    wchar_t *wide;
+    if (length) {
+        units = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+            text, (int)length, NULL, 0);
+        if (units <= 0) return NULL;
+    }
+    handle = GlobalAlloc(GMEM_MOVEABLE,
+        ((SIZE_T)units + 1u) * sizeof(wchar_t));
+    if (!handle) return NULL;
+    wide = GlobalLock(handle);
+    if (!wide) { GlobalFree(handle); return NULL; }
+    if (length && MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+            text, (int)length, wide, units) != units) {
+        GlobalUnlock(handle); GlobalFree(handle); return NULL;
+    }
+    wide[units] = L'\0'; GlobalUnlock(handle);
+    return handle;
+}
+
+int cb_platform_set_content(const cb_content *content)
+{
+    HGLOBAL text_handle = NULL, png_handle = NULL, dib_handle = NULL;
+    int result = -1;
+    DWORD before_close, after_close;
+    if (!ready_on_owner_thread() || !content ||
+        (!content->text && !content->png) ||
+        (!content->text && content->text_length) ||
+        (!content->png && content->png_length)) return -1;
+    if (content->text) {
+        if (content->text_length > CB_MAX_TEXT || content->text_length > INT_MAX ||
+            !cb_valid_utf8((const unsigned char *)content->text,
+                content->text_length)) return -1;
+        text_handle = prepare_text(content->text, content->text_length);
+        if (!text_handle) goto done;
+    }
+    /* 所有解码、分配和转换必须先成功，然后才清空旧剪贴板。 */
+    if (content->png && cb_windows_prepare_image(content->png,
+            content->png_length, &png_handle, &dib_handle) != 0) goto done;
+    if (open_clipboard_with_retry() != 0) goto done;
+    if (!EmptyClipboard()) { CloseClipboard(); goto done; }
+    if (png_handle) {
+        if (!SetClipboardData(png_format, png_handle)) goto close;
+        png_handle = NULL;
+        if (!SetClipboardData(CF_DIBV5, dib_handle)) goto close;
+        dib_handle = NULL;
+    }
+    if (text_handle) {
+        if (!SetClipboardData(CF_UNICODETEXT, text_handle)) goto close;
+        text_handle = NULL;
+    }
+    result = 0;
+close:
+    before_close = GetClipboardSequenceNumber();
     CloseClipboard();
-
-    *text = buffer;
-    *length = (size_t)utf8_length;
-
-    return 1;
+    /* CloseClipboard 会最终发布格式；只在仍是本窗口所有者时取新版本。 */
+    after_close = GetClipboardSequenceNumber();
+    last_sequence = GetClipboardOwner() == clipboard_window ?
+        after_close : before_close;
+    change_notified = 0;
+done:
+    if (text_handle) GlobalFree(text_handle);
+    if (png_handle) GlobalFree(png_handle);
+    if (dib_handle) GlobalFree(dib_handle);
+    return result;
 }
 
 int cb_platform_set(const char *text, size_t length)
 {
-    if (!ready_on_owner_thread() ||
-        text == NULL ||
-        length > CB_MAX_TEXT ||
-        !cb_valid_utf8((const unsigned char *)text, length)) {
-        return -1;
-    }
-
-    int units = 0;
-
-    if (length != 0) {
-        /* 先计算 UTF-16 所需长度，不包含末尾结束符。 */
-        units = MultiByteToWideChar(
-            CP_UTF8,
-            MB_ERR_INVALID_CHARS,
-            text,
-            (int)length,
-            NULL,
-            0
-        );
-
-        if (units <= 0) {
-            return -1;
-        }
-    }
-
-    /*
-     * SetClipboardData 要求使用可移动的全局内存。
-     * 成功交给系统后，本程序不再拥有这块内存。
-     */
-    SIZE_T bytes = ((SIZE_T)units + 1) * sizeof(wchar_t);
-
-    HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE, bytes);
-
-    if (handle == NULL) {
-        return -1;
-    }
-
-    wchar_t *wide_text = GlobalLock(handle);
-
-    if (wide_text == NULL) {
-        GlobalFree(handle);
-        return -1;
-    }
-
-    if (length != 0) {
-        int converted = MultiByteToWideChar(
-            CP_UTF8,
-            MB_ERR_INVALID_CHARS,
-            text,
-            (int)length,
-            wide_text,
-            units
-        );
-
-        if (converted != units) {
-            GlobalUnlock(handle);
-            GlobalFree(handle);
-            return -1;
-        }
-    }
-
-    wide_text[units] = L'\0';
-    GlobalUnlock(handle);
-
-    /*
-     * 转换和内存准备完成后再打开、清理剪贴板，
-     * 尽量缩短占用时间。
-     */
-    if (open_clipboard_with_retry() != 0) {
-        GlobalFree(handle);
-        return -1;
-    }
-
-    if (!EmptyClipboard()) {
-        CloseClipboard();
-        GlobalFree(handle);
-        return -1;
-    }
-
-    if (SetClipboardData(CF_UNICODETEXT, handle) == NULL) {
-        CloseClipboard();
-
-        /* 设置失败，内存所有权仍属于本程序。 */
-        GlobalFree(handle);
-        return -1;
-    }
-
-    /*
-     * 设置成功后内存属于系统，不再 GlobalFree。
-     * 在关闭剪贴板前记录版本，抑制自身写入的回传。
-     */
-    last_sequence = GetClipboardSequenceNumber();
-    change_notified = 0;
-
-    CloseClipboard();
-    return 0;
+    cb_content content;
+    memset(&content, 0, sizeof(content));
+    content.text = (char *)text; content.text_length = length;
+    return cb_platform_set_content(&content);
 }
 
 int cb_platform_random(unsigned char *out, size_t length)

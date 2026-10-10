@@ -98,6 +98,12 @@ int cb_decode_header(
         return header->length <= CB_MAX_TEXT
             && header->sequence != 0 ? 0 : -1;
 
+    case CB_IMAGE_BEGIN:
+        return header->length == 12 && header->sequence != 0 ? 0 : -1;
+    case CB_IMAGE_CHUNK:
+        return header->length > 0 && header->length <= 16384 && header->sequence != 0 ? 0 : -1;
+
+    case CB_IMAGE_CREDIT:
     case CB_ACK:
         /*
          * ACK 不包含消息体。

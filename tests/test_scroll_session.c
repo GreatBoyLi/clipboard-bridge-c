@@ -50,3 +50,8 @@ int main(void) {
  assert(writes==3 && requests[0]==5 && requests[1]==5 && requests[2]==0);
  puts("Scroll capability negotiation, renewal and release tests passed");
 }
+
+int cb_platform_poll_content(cb_content *c) {
+    memset(c,0,sizeof(*c));return cb_platform_poll(&c->text,&c->text_length);
+}
+int cb_platform_set_content(const cb_content *c) {return cb_platform_set(c->text,c->text_length);}

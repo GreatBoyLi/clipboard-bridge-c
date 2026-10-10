@@ -9,8 +9,8 @@
  *   5. 将远端文本写入本机剪贴板；
  *   6. 连接中断后重新等待或主动重连。
  *
- * 剪贴板当前只支持文本；Mac 可选键盘映射及两指速度控制。
- * 不同步图片或文件内容。
+ * 剪贴板支持纯文本及 PNG 图片，同一次复制可同时保留两种格式。
+ * Mac 可选键盘映射及两指速度控制；不传输文件内容。
  *
  * 网络数据本身没有额外加密：
  * 正式使用时必须通过 Tailscale 地址连接。
@@ -24,6 +24,7 @@
 #include "net.h"
 #include "platform.h"
 #include "protocol.h"
+#include "content.h"
 
 #include <ctype.h>
 #include <fcntl.h>
@@ -447,6 +448,14 @@ static void run_session(cb_socket connection)
 {
     char *queued_text = NULL;
     size_t queued_length = 0;
+    /* 图片分块交替收发，避免两端同时发送大内容时填满 TCP 缓冲区。
+     * 接收缓冲区只在 BEGIN 的尺寸检查通过后分配，断线立即释放。 */
+    int queued_image=0;
+    unsigned char *sending_image=NULL,*receiving_image=NULL;
+    size_t sending_size=0,sending_offset=0,receiving_size=0,receiving_offset=0;
+    int chunk_ready=0;
+    uint32_t receiving_sequence=0;
+    uint64_t receiving_deadline=0;
     int paste_waiting = 0;
     int scroll_peer_ready=0;
     unsigned last_lines=0;
@@ -483,7 +492,10 @@ static void run_session(cb_socket connection)
             break;
         }
 
-        int ready = cb_net_wait(connection, 0, POLL_MS);
+        if(receiving_image && now>=receiving_deadline) {
+            fprintf(stderr,"Image transfer progress timed out.\n");break;
+        }
+        int ready = cb_net_wait(connection, 0, (sending_image && chunk_ready) ? 0 : POLL_MS);
 
         if (ready < 0) {
             break;
@@ -500,12 +512,53 @@ static void run_session(cb_socket connection)
             int valid = 1;
 
             switch (header.type) {
+            case CB_IMAGE_BEGIN: {
+                uint32_t flags=((uint32_t)data[0]<<24)|((uint32_t)data[1]<<16)|((uint32_t)data[2]<<8)|data[3];
+                uint32_t text=((uint32_t)data[4]<<24)|((uint32_t)data[5]<<16)|((uint32_t)data[6]<<8)|data[7];
+                uint32_t png=((uint32_t)data[8]<<24)|((uint32_t)data[9]<<16)|((uint32_t)data[10]<<8)|data[11];
+                if(receiving_image || header.sequence!=next_sequence(incoming_sequence) ||
+                   flags>1 || (!flags && text) || text>CB_MAX_TEXT || png<45 || png>CB_MAX_PNG) {valid=0;break;}
+                receiving_size=CB_CONTENT_META+(size_t)text+png;
+                receiving_image=malloc(receiving_size);
+                if(!receiving_image) {valid=0;break;}
+                memcpy(receiving_image,data,CB_CONTENT_META);
+                receiving_offset=CB_CONTENT_META;receiving_sequence=header.sequence;
+                receiving_deadline=cb_net_now()+PEER_TIMEOUT_MS;
+                break;
+            }
+            case CB_IMAGE_CHUNK: {
+                if(!receiving_image || header.sequence!=receiving_sequence ||
+                   header.length>receiving_size-receiving_offset) {valid=0;break;}
+                memcpy(receiving_image+receiving_offset,data,header.length);
+                receiving_offset+=header.length;receiving_deadline=cb_net_now()+PEER_TIMEOUT_MS;
+                if(receiving_offset==receiving_size) {
+                    cb_content content={0};
+                    if(cb_content_unpack(receiving_image,receiving_size,&content)!=0 ||
+                       cb_platform_set_content(&content)!=0) {
+                        cb_content_free(&content);valid=0;break;
+                    }
+                    printf("Received and applied image: %zu PNG bytes, %zu text bytes.\n",content.png_length,content.text_length);
+                    cb_content_free(&content);free(receiving_image);receiving_image=NULL;
+                    incoming_sequence=header.sequence;
+                    if(send_frame(connection,CB_ACK,header.sequence,NULL,0)!=0) {valid=0;break;}
+                    last_sent=cb_net_now();
+                } else {
+                    /* 每次只允许一块在途，防止双向大传输互相堵在 send。 */
+                    if(send_frame(connection,CB_IMAGE_CREDIT,header.sequence,NULL,0)!=0) valid=0;
+                    last_sent=cb_net_now();
+                }
+                break;
+            }
+            case CB_IMAGE_CREDIT:
+                if(!sending_image || chunk_ready || header.sequence!=pending_ack) valid=0;
+                else {chunk_ready=1;ack_deadline=cb_net_now()+PEER_TIMEOUT_MS;}
+                break;
             case CB_TEXT:
                 /*
                  * 一个连接内的文本序号必须连续。
                  * TCP 会保证顺序，因此乱序消息属于协议错误。
                  */
-                if (header.sequence != next_sequence(incoming_sequence) ||
+                if (receiving_image || header.sequence != next_sequence(incoming_sequence) ||
                     !cb_valid_utf8(data, header.length)) {
                     valid = 0;
                     break;
@@ -538,7 +591,7 @@ static void run_session(cb_socket connection)
                 break;
 
             case CB_ACK:
-                if (pending_ack == 0 || header.sequence != pending_ack) {
+                if (sending_image || pending_ack == 0 || header.sequence != pending_ack) {
                     valid = 0;
                     break;
                 }
@@ -606,6 +659,7 @@ static void run_session(cb_socket connection)
          * 所有剪贴板调用都在主线程执行。
          * 平台接口会抑制程序刚刚写入的远端文本。
          */
+        cb_content local={0};
         char *local_text = NULL;
         size_t local_length = 0;
 
@@ -615,27 +669,39 @@ static void run_session(cb_socket connection)
         /* 每轮都服务可选手势观察器，不能在等待文字 ACK 时暂停主事件循环。 */
         int paste_requested = cb_keyboard_take_paste();
         if (!paste_waiting && paste_requested) paste_waiting = 1;
-        int changed = cb_platform_poll(&local_text, &local_length);
+        int changed = cb_platform_poll_content(&local);
+        int local_image=local.png!=NULL;
+        if(changed==1 && local_image) {
+            unsigned char *body=NULL;
+            if(cb_content_pack(&local,&body,&local_length)!=0) changed=-1;
+            else local_text=(char *)body;
+        } else if(changed==1) {
+            local_text=local.text;local_length=local.text_length;local.text=NULL;
+        }
+        cb_content_free(&local);
 
         if (changed == 1) {
             /*
              * 在公共层再次检查，避免不同平台实现
              * 意外产生不符合协议的文本。
              */
-            if (local_length <= CB_MAX_TEXT &&
-                cb_valid_utf8(
-                    (const unsigned char *)local_text, local_length)) {
+            if (local_text && (local_image || (local_length <= CB_MAX_TEXT &&
+                cb_valid_utf8((const unsigned char *)local_text, local_length)))) {
                 free(queued_text);
                 queued_text = local_text;
                 queued_length = local_length;
+                queued_image=local_image;
                 local_text = NULL;
             } else {
-                fprintf(stderr, "Local text exceeds the protocol limits.\n");
+                free(queued_text);queued_text=NULL;queued_length=0;
+                fprintf(stderr, "Local clipboard content exceeds the protocol limits.\n");
                 if (paste_waiting) cb_keyboard_finish_paste(0);
                 paste_waiting = 0;
             }
         } else if (changed < 0) {
-            fprintf(stderr, "Clipboard read failed or text was unsupported.\n");
+            /* 新复制被拒绝时丢弃旧的排队快照，不能随后覆盖为更旧内容。 */
+            free(queued_text);queued_text=NULL;queued_length=0;
+            fprintf(stderr, "Clipboard read failed or content exceeded limits.\n");
             if (paste_waiting) cb_keyboard_finish_paste(0);
             paste_waiting = 0;
         }
@@ -644,23 +710,29 @@ static void run_session(cb_socket connection)
 
         if (queued_text != NULL && pending_ack == 0) {
             outgoing_sequence = next_sequence(outgoing_sequence);
-
-            if (send_frame(
-                    connection, CB_TEXT, outgoing_sequence,
-                    queued_text, (uint32_t)queued_length) != 0) {
-                break;
+            pending_ack=outgoing_sequence;
+            if(queued_image) {
+                if(send_frame(connection,CB_IMAGE_BEGIN,outgoing_sequence,queued_text,CB_CONTENT_META)!=0) break;
+                sending_image=(unsigned char *)queued_text;sending_size=queued_length;
+                sending_offset=CB_CONTENT_META;chunk_ready=1;ack_deadline=cb_net_now()+PEER_TIMEOUT_MS;
+                printf("Sending image clipboard: %zu bytes.\n",queued_length);
+            } else {
+                if(send_frame(connection,CB_TEXT,outgoing_sequence,queued_text,(uint32_t)queued_length)!=0) break;
+                printf("Sent text: %zu bytes; waiting for confirmation.\n",queued_length);
+                free(queued_text);ack_deadline=cb_net_now()+ACK_TIMEOUT_MS;
             }
-
-            printf("Sent text: %zu bytes; waiting for confirmation.\n",
-                   queued_length);
-
-            free(queued_text);
-            queued_text = NULL;
-            queued_length = 0;
-
-            pending_ack = outgoing_sequence;
-            last_sent = cb_net_now();
-            ack_deadline = last_sent + ACK_TIMEOUT_MS;
+            queued_text=NULL;queued_length=0;last_sent=cb_net_now();
+        }
+        if(sending_image && chunk_ready) {
+            size_t chunk=sending_size-sending_offset;
+            if(chunk>CB_CONTENT_CHUNK_SIZE) chunk=CB_CONTENT_CHUNK_SIZE;
+            if(send_frame(connection,CB_IMAGE_CHUNK,pending_ack,sending_image+sending_offset,(uint32_t)chunk)!=0) break;
+            sending_offset+=chunk;last_sent=cb_net_now();chunk_ready=0;ack_deadline=last_sent+PEER_TIMEOUT_MS;
+            if(sending_offset==sending_size) {
+                free(sending_image);sending_image=NULL;
+                /* ACK 覆盖完整内容和原生解码；不能在 BEGIN 时开始 5 秒倒计时。 */
+                ack_deadline=last_sent+PEER_TIMEOUT_MS;
+            }
         }
 
         /* 必须在处理最新剪贴板及发送队列之后放行，不能在旧 ACK 到来时提前粘贴。
@@ -685,9 +757,9 @@ static void run_session(cb_socket connection)
 session_done:
     if(scroll_enabled) (void)cb_scroll_set(0);
     cb_keyboard_connected(0);
-    free(queued_text);
+    free(queued_text);free(sending_image);free(receiving_image);
 
-    puts("Disconnected. Pending old text will not be replayed.");
+    puts("Disconnected. Pending old clipboard content will not be replayed.");
 }
 
 /*

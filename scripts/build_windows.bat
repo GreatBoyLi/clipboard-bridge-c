@@ -33,11 +33,13 @@ cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
   /I..\src ^
   ..\src\protocol.c ^
   ..\src\net.c ^
+  ..\src\content.c ^
+  ..\src\image_windows.c ^
   ..\src\platform_windows.c ^
   ..\src\scroll_windows.c ^
   ..\src\main.c ^
   /Fe:clipboard-bridge.exe ^
-  /link ws2_32.lib user32.lib bcrypt.lib
+  /link ws2_32.lib user32.lib bcrypt.lib ole32.lib windowscodecs.lib gdi32.lib
 
 if errorlevel 1 goto failed
 
@@ -49,6 +51,26 @@ cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
   ..\tests\test_protocol.c ^
   /Fe:test_protocol.exe
 
+if errorlevel 1 goto failed
+
+REM Image bounds and compound protocol tests do not access the clipboard.
+cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /I..\src ^
+  ..\src\protocol.c ..\src\content.c ..\tests\test_content.c /Fe:test_content.exe
+if errorlevel 1 goto failed
+test_content.exe
+if errorlevel 1 goto failed
+cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /I..\src ^
+  ..\tests\test_windows_dib.c /Fe:test_windows_dib.exe
+if errorlevel 1 goto failed
+test_windows_dib.exe
+if errorlevel 1 goto failed
+
+REM Native WIC in-memory roundtrip; does not open the system clipboard.
+cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /I..\src ^
+  ..\src\protocol.c ..\src\content.c ..\tests\test_image_windows.c ^
+  /Fe:test_image_windows.exe /link ole32.lib windowscodecs.lib gdi32.lib user32.lib
+if errorlevel 1 goto failed
+test_image_windows.exe
 if errorlevel 1 goto failed
 
 REM Build network tests.

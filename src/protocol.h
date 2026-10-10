@@ -48,10 +48,12 @@
  *
  * AUTH：建立连接时进行配对认证。
  * TEXT：传输 UTF-8 文本，允许空文本。
- * ACK ：确认收到并处理某条文本消息。
+ * ACK ：确认成功写入一次文本或图片快照。
  * PING/PONG：后续用于连接心跳检测。
  *
- * 图片和文件传输可在未来增加新的类型，不复用已有类型编号。
+ * IMAGE_BEGIN/CHUNK/CREDIT：分块图片快照，不复用 TEXT 类型。
+ * CREDIT 仅确认一块已接收，ACK 才确认整张图片成功写入。
+ * 文件传输暂不实现。
  */
 enum {
     CB_AUTH = 1,
@@ -60,7 +62,10 @@ enum {
     CB_PING = 4,
     CB_PONG = 5,
     CB_SCROLL_CAPS = 6, /* Windows 声明已启用行数控制，正文为空 */
-    CB_SCROLL_LINES = 7 /* 正文一字节：0 恢复，1~5 临时行数 */
+    CB_SCROLL_LINES = 7, /* 正文一字节：0 恢复，1~5 临时行数 */
+    CB_IMAGE_BEGIN = 8, /* 12 字节格式及长度；非零剪贴板序号 */
+    CB_IMAGE_CHUNK = 9, /* 1~16384 字节；沿用 BEGIN 序号 */
+    CB_IMAGE_CREDIT = 10 /* 非末块的接收确认，允许继续发送一块 */
 };
 
 /*

@@ -2,6 +2,8 @@
 
 #include "platform.h"
 #include "protocol.h"
+#include "content.h"
+#import <ImageIO/ImageIO.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -67,147 +69,113 @@ void cb_platform_reset(void)
     }
 }
 
-int cb_platform_poll(char **text, size_t *length)
+/* 元数据先检查尺寸，禁止先完整解码再判断是否过大。 */
+static CGImageRef decode_image(NSData *data)
 {
-    if (text == NULL || length == NULL) {
-        return -1;
+    if (!data || data.length > CB_MAX_PIXELS * 4u + 1024u * 1024u) return NULL;
+    CGImageSourceRef source=CGImageSourceCreateWithData((__bridge CFDataRef)data,NULL);
+    if (!source) return NULL;
+    CGImageRef image=NULL;
+    CFDictionaryRef properties=CGImageSourceCopyPropertiesAtIndex(source,0,NULL);
+    if(properties) {
+        NSDictionary *meta=(__bridge NSDictionary *)properties;
+        uint64_t w=[meta[(__bridge NSString *)kCGImagePropertyPixelWidth] unsignedLongLongValue];
+        uint64_t h=[meta[(__bridge NSString *)kCGImagePropertyPixelHeight] unsignedLongLongValue];
+        if(w<=UINT32_MAX && h<=UINT32_MAX && cb_image_dimensions((uint32_t)w,(uint32_t)h))
+            image=CGImageSourceCreateImageAtIndex(source,0,NULL);
+        CFRelease(properties);
     }
-
-    /* 所有返回路径都提供明确的默认输出。 */
-    *text = NULL;
-    *length = 0;
-
+    CFRelease(source);return image;
+}
+int cb_platform_poll_content(cb_content *out)
+{
+    if(!out) return -1;
+    memset(out,0,sizeof(*out));
     @autoreleasepool {
-        if (!ready_on_main_thread()) {
-            return -1;
+        if(!ready_on_main_thread()) return -1;
+        NSInteger version=pasteboard.changeCount;
+        if(version==last_change_count) return 0;
+        NSString *text=[pasteboard stringForType:NSPasteboardTypeString];
+        NSData *png=[pasteboard dataForType:NSPasteboardTypePNG];
+        NSData *tiff=png?nil:[pasteboard dataForType:NSPasteboardTypeTIFF];
+        int bad=0;
+        if(tiff) {
+            CGImageRef image=decode_image(tiff);
+            if(image) {
+                NSBitmapImageRep *rep=[[NSBitmapImageRep alloc] initWithCGImage:image];
+                png=[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+                CGImageRelease(image);
+                if(!png) bad=1;
+            } else bad=1;
         }
-
-        NSInteger current = [pasteboard changeCount];
-
-        /*
-         * 内容没有变化时，不读取字符串，
-         * 避免重复转换和分配内存。
-         */
-        if (current == last_change_count) {
-            return 0;
+        if(png) {
+            if(!cb_png_valid(png.bytes,png.length)) bad=1;
+            else {
+                CGImageRef image=decode_image(png);
+                if(!image) bad=1;else CGImageRelease(image);
+            }
         }
-
-        NSString *value =
-            [pasteboard stringForType:NSPasteboardTypeString];
-
-        /*
-         * 读取期间可能有其他应用再次修改剪贴板。
-         * 不接受不稳定的快照，也不更新版本基线，
-         * 让下一次轮询重新读取。
-         */
-        if ([pasteboard changeCount] != current) {
-            return -1;
+        NSData *utf8=text?[text dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:NO]:nil;
+        if(text && (!utf8 || utf8.length>CB_MAX_TEXT || !cb_valid_utf8(utf8.bytes,utf8.length))) bad=1;
+        /* 图片与文字必须来自同一稳定版本，不能拼接两次复制的内容。 */
+        if(pasteboard.changeCount!=version) return -1;
+        last_change_count=version;
+        if(bad) return -1; // 超限图片不退化为仅文本，避免悄悄丢失格式。
+        if(!text && !png) return 0;
+        if(text) {
+            out->text=malloc(utf8.length+1);if(!out->text) return -1;
+            memcpy(out->text,utf8.bytes,utf8.length);out->text[utf8.length]=0;
+            out->text_length=utf8.length;
         }
-
-        if (value == nil) {
-            /*
-             * 图片、文件等内容暂不处理。
-             * 记录该版本，避免每次轮询重复读取。
-             */
-            last_change_count = current;
-            return 0;
+        if(png) {
+            out->png=malloc(png.length);
+            if(!out->png) {cb_content_free(out);return -1;}
+            memcpy(out->png,png.bytes,png.length);out->png_length=png.length;
         }
-
-        /* 禁止有损转换，确保中文和 Emoji 完整保留。 */
-        NSData *data = [value
-            dataUsingEncoding:NSUTF8StringEncoding
-            allowLossyConversion:NO];
-
-        if (data == nil) {
-            last_change_count = current;
-            return -1;
-        }
-
-        NSUInteger byte_count = [data length];
-
-        /*
-         * 不支持的内容只处理一次，
-         * 避免每次轮询都重复报告同一个错误。
-         */
-        if (byte_count > CB_MAX_TEXT ||
-            !cb_valid_utf8(
-                (const unsigned char *)[data bytes],
-                (size_t)byte_count)) {
-            last_change_count = current;
-            return -1;
-        }
-
-        /*
-         * 多分配 1 字节保存字符串结束符。
-         * 协议中的长度不包含这个结束符。
-         */
-        char *buffer = malloc((size_t)byte_count + 1);
-
-        if (buffer == NULL) {
-            /* 内存分配失败时不更新版本，允许稍后重试。 */
-            return -1;
-        }
-
-        if (byte_count != 0) {
-            memcpy(buffer, [data bytes], (size_t)byte_count);
-        }
-
-        buffer[byte_count] = '\0';
-
-        *text = buffer;
-        *length = (size_t)byte_count;
-        last_change_count = current;
-
         return 1;
     }
 }
-
-int cb_platform_set(const char *text, size_t length)
+int cb_platform_set_content(const cb_content *c)
 {
-    if (text == NULL ||
-        length > CB_MAX_TEXT ||
-        !cb_valid_utf8((const unsigned char *)text, length)) {
-        return -1;
-    }
-
+    if(!c || (!c->text && !c->png) || c->text_length>CB_MAX_TEXT ||
+       (!c->text && c->text_length) || (!c->png && c->png_length) ||
+       !cb_valid_utf8((const unsigned char *)c->text,c->text_length)) return -1;
     @autoreleasepool {
-        if (!ready_on_main_thread()) {
-            return -1;
+        if(!ready_on_main_thread()) return -1;
+        NSPasteboardItem *item=[[NSPasteboardItem alloc] init];
+        if(c->text) {
+            NSString *text=[[NSString alloc] initWithBytes:c->text length:c->text_length encoding:NSUTF8StringEncoding];
+            if(!text || ![item setString:text forType:NSPasteboardTypeString]) return -1;
         }
-
-        /*
-         * 先完成转换，再清理剪贴板。
-         * 非法输入不会导致原来的剪贴板内容被清除。
-         */
-        NSString *value = [[NSString alloc]
-            initWithBytes:text
-            length:length
-            encoding:NSUTF8StringEncoding];
-
-        if (value == nil) {
-            return -1;
+        if(c->png) {
+            if(!cb_png_valid(c->png,c->png_length)) return -1;
+            NSData *png=[NSData dataWithBytes:c->png length:c->png_length];
+            CGImageRef image=decode_image(png);if(!image) return -1;
+            NSBitmapImageRep *rep=[[NSBitmapImageRep alloc] initWithCGImage:image];
+            CGImageRelease(image);
+            NSData *tiff=[rep representationUsingType:NSBitmapImageFileTypeTIFF properties:@{}];
+            if(!tiff || ![item setData:png forType:NSPasteboardTypePNG] ||
+               ![item setData:tiff forType:NSPasteboardTypeTIFF]) return -1;
         }
-
-        /*
-         * 系统剪贴板可同时包含多个格式。
-         * 接收新的纯文本时，清除原来的图片、文件等格式。
-         */
+        /* 转换全部成功后才清空；一个 item 同时保留文本与两种图片格式。 */
         [pasteboard clearContents];
-
-        if (![pasteboard
-                setString:value
-                forType:NSPasteboardTypeString]) {
-            return -1;
-        }
-
-        /*
-         * 写入后记录新版本，下一次轮询不会再次读取它。
-         * 这是避免“Mac → Windows → Mac → Windows”循环的关键。
-         */
-        last_change_count = [pasteboard changeCount];
-
-        return 0;
+        BOOL ok=[pasteboard writeObjects:@[item]];
+        last_change_count=pasteboard.changeCount;
+        return ok?0:-1;
     }
+}
+/* 旧文本接口保留，便于现有手动测试和仅文本调用方使用。 */
+int cb_platform_poll(char **text,size_t *length)
+{
+    if(!text || !length) return -1;
+    *text=NULL;*length=0;cb_content c={0};int result=cb_platform_poll_content(&c);
+    if(result==1 && c.text) {*text=c.text;*length=c.text_length;c.text=NULL;}
+    else if(result==1) result=0;
+    cb_content_free(&c);return result;
+}
+int cb_platform_set(const char *text,size_t length)
+{
+    cb_content c={(char *)text,length,NULL,0};return cb_platform_set_content(&c);
 }
 
 int cb_platform_random(unsigned char *out, size_t length)

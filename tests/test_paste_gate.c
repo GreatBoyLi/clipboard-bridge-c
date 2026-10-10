@@ -12,7 +12,7 @@
 #undef cb_net_write
 #undef cb_net_now
 
-enum { NATIVE, TEXT_ACK, BAD_ACK, DISCONNECT, ALREADY_PENDING, NEWER_QUEUED };
+enum { NATIVE, TEXT_ACK, BAD_ACK, DISCONNECT, ALREADY_PENDING, NEWER_QUEUED, INVALID_NEWER_QUEUED };
 static int mode, iteration, completed, requested, active, sent, writing_body;
 static uint32_t acked, last_sequence;
 static cb_header writing_header;
@@ -22,6 +22,7 @@ int test_wait(cb_socket s, int w, unsigned t) {
     if (mode == NATIVE) return iteration == 1 ? 0 : -1;
     if (mode == TEXT_ACK || mode == BAD_ACK) return iteration == 1 ? 0 : iteration == 2 ? 1 : -1;
     if (mode == DISCONNECT) return iteration == 1 ? 0 : -1;
+    if(mode==INVALID_NEWER_QUEUED) return iteration<=3?0:iteration==4?1:-1;
     if (iteration <= 2) return 0;
     if (iteration == 3 || (mode == NEWER_QUEUED && iteration == 4)) return 1;
     return -1;
@@ -53,8 +54,9 @@ void cb_platform_close(void) { }
 void cb_platform_reset(void) { }
 int cb_platform_poll(char **text, size_t *n) {
     *text = NULL; *n = 0;
+    if(mode==INVALID_NEWER_QUEUED && iteration==3) return -1;
     if (mode == NATIVE) return 0; // Mac 没有新复制：旧文字不应重发。
-    if (iteration == 1 || (mode == NEWER_QUEUED && iteration == 2)) {
+    if (iteration == 1 || ((mode == NEWER_QUEUED || mode==INVALID_NEWER_QUEUED) && iteration == 2)) {
         *text = malloc(6); assert(*text);
         memcpy(*text, iteration == 1 ? "hello" : "world", 6); *n = 5;
         return 1;
@@ -68,11 +70,12 @@ int cb_keyboard_init(int m) { (void)m; return 0; }
 void cb_keyboard_close(void) { }
 void cb_keyboard_connected(int value) { active = value; }
 int cb_keyboard_take_paste(void) {
-    if (requested || ((mode == ALREADY_PENDING || mode == NEWER_QUEUED) && iteration < 2)) return 0;
+    if (requested || ((mode == ALREADY_PENDING || mode == NEWER_QUEUED || mode==INVALID_NEWER_QUEUED) && iteration < 2)) return 0;
     assert(active); requested = 1;
     return 1; // 请求本身不读取 Mac 的旧内容。
 }
 void cb_keyboard_finish_paste(int success) {
+    if(mode==INVALID_NEWER_QUEUED) {assert(active && !success);return;}
     assert(active && success);
     if (mode == NATIVE) assert(sent == 0);
     else assert((mode == TEXT_ACK || mode == ALREADY_PENDING || mode == NEWER_QUEUED) && sent && acked == last_sequence);
@@ -80,13 +83,18 @@ void cb_keyboard_finish_paste(int success) {
     ++completed;
 }
 int main(void) {
-    for (mode = NATIVE; mode <= NEWER_QUEUED; ++mode) {
+    for (mode = NATIVE; mode <= INVALID_NEWER_QUEUED; ++mode) {
         iteration = completed = requested = active = sent = writing_body = 0;
         acked = last_sequence = 0;
         run_session(123);
         assert(!active);
         assert(sent == (mode == NATIVE ? 0 : mode == NEWER_QUEUED ? 2 : 1));
-        assert(completed == (mode == BAD_ACK || mode == DISCONNECT ? 0 : 1));
+        assert(completed == (mode == BAD_ACK || mode == DISCONNECT || mode==INVALID_NEWER_QUEUED ? 0 : 1));
     }
     puts("Native paste and pending text ACK tests passed");
 }
+
+int cb_platform_poll_content(cb_content *c) {
+    memset(c,0,sizeof(*c));return cb_platform_poll(&c->text,&c->text_length);
+}
+int cb_platform_set_content(const cb_content *c) {return cb_platform_set(c->text,c->text_length);}

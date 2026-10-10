@@ -45,9 +45,9 @@ bash scripts/build_mac.sh
 
 其他组合使用基础修饰键映射，例如 Command+B 发送 Alt+B；这里没有将所有 Command 组合都替换为 Ctrl。某些编辑器使用 Ctrl+Shift+Z 重做，可在启动参数末尾添加 `--redo ctrl-shift-z`，默认是 `--redo ctrl-y`。
 
-⌘V 使用 Windows 当前剪贴板，不会强制重发 Mac 的旧文字。Mac 有新复制的文字待同步时，先等全部待发送文字确认写入，再执行 Shift+Insert；没有新文字时直接执行。这允许在 Windows 内部使用 ⌘C/V 复制和粘贴文件（目标应用需支持 Insert 组合）。Mac 与 Windows 之间的图片、文件传输仍未实现。
+⌘V 使用 Windows 当前剪贴板，不会强制重发 Mac 的旧文字。Mac 有新复制的文字或图片待同步时，先等全部待发送内容确认写入，再执行 Shift+Insert；没有新内容时直接执行。这允许在 Windows 内部使用 ⌘C/V 复制和粘贴文件（目标应用需支持 Insert 组合）。Mac 与 Windows 之间已支持[图片及附带纯文本同步](images.md)，文件跨设备传输仍未实现。
 
-连接建立前已有的 Mac 文字不会自动发送，需要重新复制。断线、确认超时、文字读取失败或离开 Moonlight 会取消尚未执行的粘贴，不在重连后重放。
+连接建立前已有的 Mac 文字不会自动发送，需要重新复制。断线、确认超时、剪贴板读取失败或离开 Moonlight 会取消尚未执行的粘贴，不在重连后重放。
 
 ## 验证与边界
 
@@ -59,7 +59,7 @@ bash scripts/build_mac.sh
 bash scripts/test_mac.sh
 ```
 
-自动测试覆盖协议、回环网络、修饰键和组合键按下/松开状态、保留 Windows 原生剪贴板、等待所有待同步文字的正确 ACK、错误 ACK/断线取消。它不模拟真实 Moonlight 或 Windows 应用，最终输入手感及应用兼容性需要两端实机验证。
+自动测试覆盖协议、回环网络、修饰键和组合键按下/松开状态、保留 Windows 原生剪贴板、等待所有待同步内容的正确 ACK、错误 ACK/断线取消。它不模拟真实 Moonlight 或 Windows 应用，最终输入手感及应用兼容性需要两端实机验证。
 
 前台识别通过 macOS 进程管理器直接查询当前前台 PID，不依赖终端程序未运行的 AppKit 主事件循环，也不依赖 AXFocusedApplication 查询。系统查询失败时暂停映射，避免使用过期焦点影响其他应用。使用的进程接口已被苹果标为弃用，但在当前 macOS 上已验证可用；未来系统兼容性需继续检查。新增的模拟焦点测试覆盖终端 → Moonlight → 其他应用以及断线和查询失败。
 
