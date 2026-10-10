@@ -2,12 +2,12 @@
 #define CB_SCROLL_LINES_H
 #include <stdint.h>
 #include <math.h>
-/* 按触控板高度/秒线性映射：<=0.25 为 1 行，>=0.8 为 5 行。
- * 四舍五入后初始 1 行范围约至 0.319；防抖使升至 2 行约需超过 0.333。
+/* 按触控板高度/秒线性映射：<=0.5 为 1 行，>=0.8 为 5 行。
+ * 四舍五入后初始 1 行范围约至 0.538；防抖使升至 2 行约需超过 0.545。
  * Windows 行数是整数，只对线性结果四舍五入，不改写任何滚动事件。
  * 0 专用于“恢复原值”，不能误设成 Windows 的“禁止滚动”。 */
 static inline double cb_lines_position(double speed) {
-    double t=(speed-.25)/.55;
+    double t=(speed-.5)/.3;
     return t<0 ? 1 : t>1 ? 5 : 1+4*t;
 }
 static inline unsigned cb_lines_linear(double speed) {
