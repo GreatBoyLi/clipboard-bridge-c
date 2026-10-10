@@ -12,9 +12,13 @@ static int set_mock(unsigned value,void *ctx) {
 int main(void) {
  assert(cb_lines_linear(0)==1);
  assert(cb_lines_linear(.08)==1);
- assert(cb_lines_linear(.26)==2);
- assert(cb_lines_linear(.44)==3);
- assert(cb_lines_linear(.62)==4);
+ assert(cb_lines_linear(.26)==1);
+ assert(cb_lines_linear(.30)==1);
+ assert(cb_lines_linear(.318)==1);
+ assert(cb_lines_linear(.32)==2);
+ assert(cb_lines_linear(.3875)==2);
+ assert(cb_lines_linear(.525)==3);
+ assert(cb_lines_linear(.6625)==4);
  assert(cb_lines_linear(.8)==5);
  assert(cb_lines_linear(10)==5);
  assert(cb_lines_linear(NAN)==0);
@@ -28,9 +32,17 @@ int main(void) {
  assert(cb_lines_update(&f,.08,100)==1);
  assert(cb_lines_update(&f,.8,150)==1); /* 最多每 200ms 切换一次 */
  assert(cb_lines_update(&f,.8,300)==5);
- f=(cb_lines_filter){0};assert(cb_lines_update(&f,.17,100)==2);
- assert(cb_lines_update(&f,.168,400)==2); /* 阈值附近不切回 1 */
+ f=(cb_lines_filter){0};assert(cb_lines_update(&f,.34,100)==2);
+ assert(cb_lines_update(&f,.32,400)==2); /* 阈值附近不切回 1 */
  assert(cb_lines_update(&f,.08,700)==1);
+ /* 实机常见慢滑速度先保持 1 行，超过扩大的范围才升档。 */
+ f=(cb_lines_filter){0};
+ assert(cb_lines_update(&f,.039,100)==1);
+ assert(cb_lines_update(&f,.209,400)==1);
+ assert(cb_lines_update(&f,.299,700)==1);
+ assert(cb_lines_update(&f,.32,1000)==1);
+ assert(cb_lines_update(&f,.34,1300)==2);
+ assert(cb_lines_update(&f,.747,1600)==5);
  cb_lines_lease lease={0};
  cb_lines_renew(&lease,5,100);
  assert(cb_lines_desired(&lease,100)==5);

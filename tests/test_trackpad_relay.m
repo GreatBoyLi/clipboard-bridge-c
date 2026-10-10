@@ -111,7 +111,7 @@ int main(void) {
             assert(CFEqual(before,after));assert(emitted==0);
             CFRelease(before);CFRelease(after);CFRelease(event);focus_pid=200;
         }
-        scroll_lines_enabled=1;fake_speed_available=1;fake_speed=.44;
+        scroll_lines_enabled=1;fake_speed_available=1;fake_speed=.525;
         assert(cb_keyboard_scroll_lines()==3);
         focus_pid=100;assert(cb_keyboard_scroll_lines()==0); /* 切走即恢复 */
         focus_pid=200;fake_speed=.8;assert(cb_keyboard_scroll_lines()==5);
