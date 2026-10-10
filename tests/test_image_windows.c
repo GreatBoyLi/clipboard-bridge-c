@@ -20,7 +20,9 @@ int main(void)
     assert(decode_png(encoded,length,&decoded,&width,&height)==0);
     assert(width==2 && height==1 && !memcmp(decoded,sample,sizeof(sample)));
     assert(cb_windows_prepare_image(encoded,length,&png_handle,&dib_handle)==0);
-    const unsigned char *dib=GlobalLock(dib_handle);cb_dib_layout layout;
+    const unsigned char *dib=GlobalLock(dib_handle);
+    /* 显式初始化，避免 MSVC 在短路断言之后认为输出字段可能未赋值。 */
+    cb_dib_layout layout={0};
     assert(dib && cb_windows_dib_layout(dib,(size_t)GlobalSize(dib_handle),&layout)==0);
     assert(layout.width==2 && layout.height==1 && layout.top_down && layout.alpha);
     assert(!memcmp(dib+layout.offset,sample,sizeof(sample)));
