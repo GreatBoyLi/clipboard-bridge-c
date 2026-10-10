@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #ifdef _WIN32
@@ -13,6 +14,7 @@
 #include <io.h>
 #else
 #include <unistd.h>
+#include <dirent.h>
 #endif
 static uint32_t get32(const unsigned char *p) {
     return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|((uint32_t)p[2]<<8)|p[3];
@@ -44,11 +46,24 @@ int cb_file_name_valid(const char *s) {
     return 1;
 }
 #ifdef _WIN32
+/* 文件夹嵌套可能超过 MAX_PATH；统一转换为绝对扩展路径。 */
 static wchar_t *wide_path(const char *path) {
     int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path,-1,NULL,0);
     if(n<=0) return NULL;
-    wchar_t *p=malloc((size_t)n*sizeof(*p));
-    if(p && !MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path,-1,p,n)) {free(p);return NULL;}return p;
+    wchar_t *raw=malloc((size_t)n*sizeof(*raw));if(!raw) return NULL;
+    if(!MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path,-1,raw,n)) {free(raw);return NULL;}
+    for(int i=0;i<n;i++) if(raw[i]==L'/') raw[i]=L'\\';
+    if(n>=5 && raw[0]==L'\\' && raw[1]==L'\\' && raw[2]==L'?' && raw[3]==L'\\') return raw;
+    DWORD needed=GetFullPathNameW(raw,0,NULL,NULL);if(!needed) {free(raw);return NULL;}
+    wchar_t *full=malloc((size_t)needed*sizeof(*full));if(!full) {free(raw);return NULL;}
+    DWORD used=GetFullPathNameW(raw,needed,full,NULL);free(raw);
+    if(!used || used>=needed) {free(full);return NULL;}
+    int unc=used>=2 && full[0]==L'\\' && full[1]==L'\\';
+    const wchar_t *prefix=unc?L"\\\\?\\UNC\\":L"\\\\?\\";
+    size_t prefix_len=unc?8u:4u,skip=unc?2u:0u;
+    wchar_t *out=malloc((prefix_len+(size_t)used-skip+1)*sizeof(*out));
+    if(out) {memcpy(out,prefix,prefix_len*sizeof(*out));memcpy(out+prefix_len,full+skip,((size_t)used-skip+1)*sizeof(*out));}
+    free(full);return out;
 }
 static FILE *open_regular(const char *path,int writing) {
     wchar_t *wide=wide_path(path);if(!wide) return NULL;
@@ -117,70 +132,182 @@ static char *make_directory(void) {
     if(!mkdtemp(p)) {free(p);return NULL;}return p;
 }
 #endif
+/* 目录树只接受相对路径，每一段均满足两平台文件名限制。 */
+static int relative_valid(const char *name) {
+    size_t n=strlen(name);if(!n || n>CB_FILE_PATH || name[0]=='/') return 0;
+    unsigned depth=0;const char *p=name;
+    while(*p) {
+        const char *slash=strchr(p,'/');size_t length=slash?(size_t)(slash-p):strlen(p);
+        if(!length || length>240 || ++depth>CB_FILE_DEPTH) return 0;
+        char part[241];memcpy(part,p,length);part[length]=0;
+        if(!cb_file_name_valid(part)) return 0;
+        if(!slash) return 1;
+        p=slash+1;
+    }return 0;
+}
+static char *join_path(const char *a,const char *b) {
+    size_t n=strlen(a)+strlen(b)+2;char *p=malloc(n);
+    if(p) snprintf(p,n,"%s/%s",a,b);return p;
+}
+static char *copy_path(const char *p) {
+    size_t n=strlen(p)+1;char *out=malloc(n);if(out) memcpy(out,p,n);return out;
+}
+#ifdef _WIN32
+static int create_directory(const char *path) {
+    wchar_t *p=wide_path(path);if(!p) return -1;
+    int ok=CreateDirectoryW(p,NULL)!=0;free(p);return ok?0:-1;
+}
+/* 打开属性句柄时不跟随重解析点（符号链接、junction 等）。 */
+static int path_kind(const char *path,uint64_t *size,uint64_t *stamp) {
+    wchar_t *p=wide_path(path);if(!p) return 0;
+    HANDLE h=CreateFileW(p,FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+        NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,NULL);free(p);
+    if(h==INVALID_HANDLE_VALUE) return 0;
+    BY_HANDLE_FILE_INFORMATION i={0};int kind=0;
+    if(GetFileInformationByHandle(h,&i) && GetFileType(h)==FILE_TYPE_DISK && !(i.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT)) {
+        *size=((uint64_t)i.nFileSizeHigh<<32)|i.nFileSizeLow;
+        *stamp=((uint64_t)i.ftLastWriteTime.dwHighDateTime<<32)|i.ftLastWriteTime.dwLowDateTime;
+        kind=(i.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)?2:1;
+    }
+    CloseHandle(h);return kind;
+}
+#else
+static int create_directory(const char *path) {return mkdir(path,0700);}
+static int path_kind(const char *path,uint64_t *size,uint64_t *stamp) {
+    struct stat s;if(lstat(path,&s)!=0 || s.st_size<0) return 0;
+    if(!S_ISREG(s.st_mode) && !S_ISDIR(s.st_mode)) return 0;
+    *size=(uint64_t)s.st_size;
+#ifdef __APPLE__
+    *stamp=(uint64_t)s.st_mtimespec.tv_sec*UINT64_C(1000000000)+(uint64_t)s.st_mtimespec.tv_nsec;
+#else
+    *stamp=(uint64_t)s.st_mtim.tv_sec*UINT64_C(1000000000)+(uint64_t)s.st_mtim.tv_nsec;
+#endif
+    return S_ISDIR(s.st_mode)?2:1;
+}
+#endif
+static int collect(cb_file_tx *tx,const char *path,const char *name);
+static int collect_child(cb_file_tx *tx,const char *path,const char *name,const char *child) {
+    if(!strcmp(child,".") || !strcmp(child,"..")) return 0;
+    if(!cb_file_name_valid(child)) return -1;
+    char *full=join_path(path,child),*relative=join_path(name,child);
+    int ok=full && relative?collect(tx,full,relative):-1;
+    free(full);free(relative);return ok;
+}
+static int collect(cb_file_tx *tx,const char *path,const char *name) {
+    if(tx->count>=CB_FILE_ENTRIES || !relative_valid(name)) return -1;
+    for(unsigned j=0;j<tx->count;j++) if(same_name(name,tx->names[j])) return -1;
+    unsigned i=tx->count;uint64_t size=0,stamp=0;int kind=path_kind(path,&size,&stamp);
+    if(!kind || (kind==1 && size>CB_FILE_TOTAL-tx->total)) return -1;
+    tx->meta_length+=10+strlen(name);if(tx->meta_length>CB_FILE_META) return -1;
+    tx->paths[i]=copy_path(path);tx->names[i]=copy_path(name);
+    if(!tx->paths[i] || !tx->names[i]) return -1;
+    tx->directories[i]=(unsigned char)(kind==2);tx->stamps[i]=stamp;
+    tx->sizes[i]=kind==2?0:size;tx->crc[i]=0xffffffffu;tx->total+=tx->sizes[i];tx->count++;
+    if(kind==1) return 0;
+    tx->tree=1;
+#ifdef _WIN32
+    char *pattern=join_path(path,"*");if(!pattern) return -1;
+    wchar_t *wide=wide_path(pattern);free(pattern);if(!wide) return -1;
+    WIN32_FIND_DATAW data={0};HANDLE find=FindFirstFileW(wide,&data);free(wide);
+    if(find==INVALID_HANDLE_VALUE) return GetLastError()==ERROR_FILE_NOT_FOUND?0:-1;
+    int result=0;
+    do {
+        int n=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,data.cFileName,-1,NULL,0,NULL,NULL);
+        char *child=n>0?malloc((size_t)n):NULL;
+        if(!child || !WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,data.cFileName,-1,child,n,NULL,NULL)) {
+            free(child);result=-1;break;
+        }
+        result=collect_child(tx,path,name,child);free(child);if(result!=0) break;
+    } while(FindNextFileW(find,&data));
+    if(result==0 && GetLastError()!=ERROR_NO_MORE_FILES) result=-1;
+    FindClose(find);return result;
+#else
+    int fd=open(path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(fd<0) return -1;
+    DIR *dir=fdopendir(fd);if(!dir) {close(fd);return -1;}
+    int result=0;struct dirent *entry;
+    for(;;) {
+        errno=0;entry=readdir(dir);if(!entry) {if(errno) result=-1;break;}
+        result=collect_child(tx,path,name,entry->d_name);if(result!=0) break;
+    }
+    closedir(dir);return result;
+#endif
+}
 void cb_file_tx_close(cb_file_tx *tx) {
-    for(unsigned i=0;i<CB_FILE_COUNT;i++) if(tx->streams[i]) fclose(tx->streams[i]);
+    if(tx->stream) fclose(tx->stream);
+    for(unsigned i=0;i<CB_FILE_ENTRIES;i++) {free(tx->paths[i]);free(tx->names[i]);}
     memset(tx,0,sizeof(*tx));
 }
 int cb_file_tx_open(cb_file_tx *tx,const char *const *paths,unsigned count,unsigned char **manifest,size_t *length) {
     if(!tx || !manifest || !length) return -1;
     *manifest=NULL;*length=0;
     if(!paths || !count || count>CB_FILE_COUNT) return -1;
-    const char *names[CB_FILE_COUNT];size_t meta=4;
+    tx->meta_length=4;
     for(unsigned i=0;i<count;i++) {
-        if(!paths[i]) goto fail;
-        const char *a=strrchr(paths[i],'/'),*b=strrchr(paths[i],'\\');
-        names[i]=a && (!b || a>b)?a+1:b?b+1:paths[i];
-        if(!cb_file_name_valid(names[i])) goto fail;
-        for(unsigned j=0;j<i;j++) if(same_name(names[i],names[j])) goto fail;
-        meta+=10+strlen(names[i]);
-        tx->streams[i]=open_regular(paths[i],0);
-        if(!tx->streams[i] || signature(tx->streams[i],&tx->sizes[i],&tx->stamps[i])!=0 ||
-           tx->sizes[i]>CB_FILE_TOTAL-tx->total) goto fail;
-        tx->total+=tx->sizes[i];tx->crc[i]=0xffffffffu;
+        if(!paths[i] || !*paths[i]) goto fail;
+        /* 规范化选择的根路径结尾（例如目录路径尾部的 /）。 */
+        char *full=copy_path(paths[i]);if(!full) goto fail;
+        size_t len=strlen(full);while(len>1 && (full[len-1]=='/' || full[len-1]=='\\')) full[--len]=0;
+        const char *a=strrchr(full,'/'),*b=strrchr(full,'\\');
+        const char *name=a && (!b || a>b)?a+1:b?b+1:full;
+        int ok=cb_file_name_valid(name)?collect(tx,full,name):-1;
+        free(full);if(ok!=0) goto fail;
     }
-    if(meta>CB_FILE_META) goto fail;
-    unsigned char *p=malloc(meta);if(!p) goto fail;
-    put32(p,count);size_t pos=4;
-    for(unsigned i=0;i<count;i++) {
-        size_t n=strlen(names[i]);put64(p+pos,tx->sizes[i]);p[pos+8]=(unsigned char)(n>>8);p[pos+9]=(unsigned char)n;
-        memcpy(p+pos+10,names[i],n);pos+=10+n;
+    if(!tx->tree && tx->count>CB_FILE_COUNT) goto fail;
+    unsigned char *p=malloc(tx->meta_length);if(!p) goto fail;
+    put32(p,tx->count|(tx->tree?0x80000000u:0));size_t pos=4;
+    for(unsigned i=0;i<tx->count;i++) {
+        size_t n=strlen(tx->names[i]);put64(p+pos,tx->directories[i]?UINT64_MAX:tx->sizes[i]);
+        p[pos+8]=(unsigned char)(n>>8);p[pos+9]=(unsigned char)n;
+        memcpy(p+pos+10,tx->names[i],n);pos+=10+n;
     }
-    tx->count=count;*manifest=p;*length=meta;return 0;
+    *manifest=p;*length=tx->meta_length;return 0;
 fail:cb_file_tx_close(tx);return -1;
 }
 int cb_file_tx_chunk(cb_file_tx *tx,unsigned char *block,size_t *length) {
     *length=0;
     while(tx->index<tx->count) {
-        unsigned i=tx->index;
+        unsigned i=tx->index;if(tx->directories[i]) {tx->index++;continue;}
+        if(!tx->stream) {
+            uint64_t size=0,stamp=0;tx->stream=open_regular(tx->paths[i],0);
+            if(!tx->stream || signature(tx->stream,&size,&stamp)!=0 || size!=tx->sizes[i] || stamp!=tx->stamps[i]) return -1;
+        }
         if(tx->offset==tx->sizes[i]) {
             uint64_t size=0,stamp=0;
-            if(fgetc(tx->streams[i])!=EOF || ferror(tx->streams[i]) ||
-               signature(tx->streams[i],&size,&stamp)!=0 || size!=tx->sizes[i] || stamp!=tx->stamps[i]) return -1;
-            fclose(tx->streams[i]);tx->streams[i]=NULL;tx->index++;tx->offset=0;continue;
+            if(fgetc(tx->stream)!=EOF || ferror(tx->stream) || signature(tx->stream,&size,&stamp)!=0 ||
+               size!=tx->sizes[i] || stamp!=tx->stamps[i]) return -1;
+            fclose(tx->stream);tx->stream=NULL;tx->index++;tx->offset=0;continue;
         }
         uint64_t remaining=tx->sizes[i]-tx->offset;
         size_t n=remaining>CB_FILE_CHUNK?CB_FILE_CHUNK:(size_t)remaining;
-        if(fread(block,1,n,tx->streams[i])!=n) return -1;
+        if(fread(block,1,n,tx->stream)!=n) return -1;
         tx->crc[i]=crc_update(tx->crc[i],block,n);tx->offset+=n;tx->done+=n;*length=n;return 1;
     }return 0;
 }
 int cb_file_tx_end(cb_file_tx *tx,unsigned char *checksums,size_t *length) {
     if(tx->index!=tx->count || !tx->count) return -1;
-    for(unsigned i=0;i<tx->count;i++) put32(checksums+4*i,tx->crc[i]^0xffffffffu);
+    for(unsigned i=0;i<tx->count;i++) {
+        if(tx->directories[i]) {uint64_t size=0,stamp=0;
+            if(path_kind(tx->paths[i],&size,&stamp)!=2 || stamp!=tx->stamps[i]) return -1;}
+        put32(checksums+4*i,tx->crc[i]^0xffffffffu);
+    }
     *length=(size_t)tx->count*4;return 0;
 }
 void cb_file_rx_close(cb_file_rx *rx) {
     if(rx->stream) fclose(rx->stream);
-    for(unsigned i=0;i<CB_FILE_COUNT;i++) if(rx->paths[i]) {
-        if(!rx->published) delete_path(rx->paths[i],0);free(rx->paths[i]);
-    }
+    /* 逆序删除，先子文件和空目录，最后根目录；只清理本次实际创建的条目。 */
+    for(unsigned i=rx->count;i>0;i--) if(rx->paths[i-1] && !rx->published && rx->created[i-1])
+        delete_path(rx->paths[i-1],rx->directories[i-1]);
+    for(unsigned i=0;i<CB_FILE_ENTRIES;i++) free(rx->paths[i]);
     if(rx->directory) {if(!rx->published) delete_path(rx->directory,1);free(rx->directory);}
     memset(rx,0,sizeof(*rx));
 }
-/* 空文件也必须落盘。每个目标都以独占创建打开，防止覆盖/符号链接。 */
 static int advance(cb_file_rx *rx) {
     while(rx->index<rx->count) {
-        if(!rx->stream) {rx->stream=open_regular(rx->paths[rx->index],1);if(!rx->stream) return -1;}
+        if(rx->directories[rx->index]) {rx->index++;continue;}
+        if(!rx->stream) {
+            rx->stream=open_regular(rx->paths[rx->index],1);if(!rx->stream) return -1;
+            rx->created[rx->index]=1;
+        }
         if(rx->offset!=rx->sizes[rx->index]) return 0;
         int ok=fclose(rx->stream);rx->stream=NULL;if(ok!=0) return -1;
         rx->index++;rx->offset=0;
@@ -188,28 +315,47 @@ static int advance(cb_file_rx *rx) {
 }
 int cb_file_rx_begin(cb_file_rx *rx,const unsigned char *meta,size_t length) {
     if(rx->directory || !meta || length<4 || length>CB_FILE_META) return -1;
-    unsigned count=get32(meta);if(!count || count>CB_FILE_COUNT) return -1;
-    char names[CB_FILE_COUNT][241];size_t pos=4;uint64_t total=0;
+    uint32_t version=get32(meta);int tree=(version&0x80000000u)!=0;unsigned count=version&0x7fffffffu;
+    if(!count || count>(tree?CB_FILE_ENTRIES:CB_FILE_COUNT)) return -1;
+    /* 先完整验证清单；非法路径不能创建任何接收文件。 */
+    char **names=calloc(count,sizeof(char *));if(!names) return -1;
+    unsigned roots=0;size_t pos=4;uint64_t total=0;int result=-1;
     for(unsigned i=0;i<count;i++) {
-        if(length-pos<10) return -1;
+        if(length-pos<10) goto done;
         uint64_t size=get64(meta+pos);size_t n=((size_t)meta[pos+8]<<8)|meta[pos+9];pos+=10;
-        if(!n || n>240 || n>length-pos || size>CB_FILE_TOTAL-total || memchr(meta+pos,0,n)) return -1;
+        int directory=tree && size==UINT64_MAX;
+        if(!n || n>(tree?CB_FILE_PATH:240u) || n>length-pos || memchr(meta+pos,0,n) ||
+           (!directory && size>CB_FILE_TOTAL-total)) goto done;
+        names[i]=malloc(n+1);if(!names[i]) goto done;
         memcpy(names[i],meta+pos,n);names[i][n]=0;pos+=n;
-        if(!cb_file_name_valid(names[i])) return -1;
-        for(unsigned j=0;j<i;j++) if(same_name(names[i],names[j])) return -1;
-        rx->sizes[i]=size;rx->crc[i]=0xffffffffu;total+=size;
+        if(tree?!relative_valid(names[i]):!cb_file_name_valid(names[i])) goto done;
+        for(unsigned j=0;j<i;j++) if(same_name(names[i],names[j])) goto done;
+        char *slash=strrchr(names[i],'/');
+        if(slash) {
+            *slash=0;int parent=0;
+            for(unsigned j=0;j<i;j++) if(rx->directories[j] && !strcmp(names[j],names[i])) {parent=1;break;}
+            *slash='/';if(!parent) goto done;
+        } else if(++roots>CB_FILE_COUNT) goto done;
+        rx->directories[i]=(unsigned char)directory;rx->sizes[i]=directory?0:size;
+        rx->crc[i]=0xffffffffu;total+=rx->sizes[i];
     }
-    if(pos!=length) return -1;
-    rx->directory=make_directory();if(!rx->directory) return -1;
+    if(pos!=length || !roots) goto done;
+    rx->directory=make_directory();if(!rx->directory) goto done;
     rx->count=count;rx->total=total;
     for(unsigned i=0;i<count;i++) {
-        size_t n=strlen(rx->directory)+strlen(names[i])+2;rx->paths[i]=malloc(n);
-        if(!rx->paths[i]) goto fail;
-        snprintf(rx->paths[i],n,"%s/%s",rx->directory,names[i]);
+        rx->paths[i]=join_path(rx->directory,names[i]);if(!rx->paths[i]) goto done;
+        if(!strchr(names[i],'/')) rx->roots[rx->root_count++]=rx->paths[i];
+        if(rx->directories[i]) {
+            if(create_directory(rx->paths[i])!=0) goto done;
+            rx->created[i]=1;
+        }
     }
-    if(advance(rx)!=0) goto fail;
-    return 0;
-fail:cb_file_rx_close(rx);return -1;
+    if(advance(rx)!=0) goto done;
+    result=0;
+done:
+    for(unsigned i=0;i<count;i++) free(names[i]);free(names);
+    if(result!=0) cb_file_rx_close(rx);
+    return result;
 }
 int cb_file_rx_chunk(cb_file_rx *rx,const unsigned char *block,size_t length) {
     if(!rx->directory || rx->verified || !length || length>CB_FILE_CHUNK || (uint64_t)length>rx->total-rx->done) return -1;

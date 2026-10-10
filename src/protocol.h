@@ -70,7 +70,7 @@ enum {
     CB_CAPS_READY = 12, /* seq=0，一字节：1 就绪，0 不可用 */
     CB_CAPS_ACTION = 13, /* 独立递增 seq，一字节短按=1/长按=2 */
     CB_CAPS_RESULT = 14, /* 原动作 seq，一字节：1 已提交，0 失败 */
-    CB_FILES_BEGIN = 15, /* 非零剪贴板序号；文件数、大小、UTF-8 基本名称 */
+    CB_FILES_BEGIN = 15, /* 非零剪贴板序号；文件/目录清单，最多 256 KiB；旧版基本名称或新版相对路径树 */
     CB_FILES_CHUNK = 16, /* 同一序号，最多 16 KiB，依清单顺序拼接 */
     CB_FILES_CREDIT = 17, /* BEGIN 和每块的确认，允许发送下一块 */
     CB_FILES_END = 18 /* 每文件 4 字节 CRC32；发布剪贴板后才 ACK */

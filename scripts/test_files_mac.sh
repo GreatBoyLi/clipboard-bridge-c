@@ -4,6 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build
 flags=(-std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -Isrc)
+clang "${flags[@]}" src/protocol.c tests/test_folders.c -o build/test_folders
+./build/test_folders
 clang "${flags[@]}" src/protocol.c src/files.c tests/test_files.c -o build/test_files
 ./build/test_files
 clang "${flags[@]}" src/protocol.c src/content.c src/files.c src/net.c tests/test_files_session.c -o build/test_files_session

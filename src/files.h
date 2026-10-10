@@ -5,21 +5,30 @@
 #include <stdio.h>
 #define CB_FILE_COUNT 64u
 #define CB_FILE_CHUNK 16384u
-#define CB_FILE_META 32768u
+#define CB_FILE_META 262144u
+#define CB_FILE_ENTRIES 1024u
+#define CB_FILE_DEPTH 32u
+#define CB_FILE_PATH 1024u
 #define CB_FILE_TOTAL (UINT64_C(1024)*1024*1024)
-/* 文件清单只带基本名称与大小，不允许网络路径指定接收位置。 */
+/* 普通文件使用旧清单；目录树用版本位及经过校验的相对路径，不能指定接收根目录。 */
 typedef struct {
     unsigned count,index;
-    FILE *streams[CB_FILE_COUNT];
-    uint64_t sizes[CB_FILE_COUNT],stamps[CB_FILE_COUNT],offset,total,done;
-    uint32_t crc[CB_FILE_COUNT];
+    FILE *stream;
+    char *paths[CB_FILE_ENTRIES],*names[CB_FILE_ENTRIES];
+    unsigned char directories[CB_FILE_ENTRIES];
+    uint64_t sizes[CB_FILE_ENTRIES],stamps[CB_FILE_ENTRIES],offset,total,done;
+    uint32_t crc[CB_FILE_ENTRIES];
+    size_t meta_length;
+    int tree;
 } cb_file_tx;
 typedef struct {
     unsigned count,index;
     FILE *stream;
-    char *directory,*paths[CB_FILE_COUNT];
-    uint64_t sizes[CB_FILE_COUNT],offset,total,done;
-    uint32_t crc[CB_FILE_COUNT];
+    char *directory,*paths[CB_FILE_ENTRIES],*roots[CB_FILE_COUNT];
+    unsigned root_count;
+    unsigned char directories[CB_FILE_ENTRIES],created[CB_FILE_ENTRIES];
+    uint64_t sizes[CB_FILE_ENTRIES],offset,total,done;
+    uint32_t crc[CB_FILE_ENTRIES];
     int verified,published;
 } cb_file_rx;
 int cb_file_name_valid(const char *name);

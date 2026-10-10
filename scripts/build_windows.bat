@@ -53,6 +53,14 @@ if errorlevel 1 goto failed
 test_files.exe
 if errorlevel 1 goto failed
 
+REM Folder stream tests use only private temporary directories.
+cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /D_CRT_SECURE_NO_WARNINGS /I..\src ^
+  ..\src\protocol.c ..\tests\test_folders.c ^
+  /Fe:test_folders.exe /link user32.lib bcrypt.lib
+if errorlevel 1 goto failed
+test_folders.exe
+if errorlevel 1 goto failed
+
 REM Native CF_HDROP conversion only; never opens the system clipboard.
 cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /D_CRT_SECURE_NO_WARNINGS /I..\src ^
   ..\src\protocol.c ..\src\content.c ..\src\image_windows.c ..\tests\test_files_windows.c ^

@@ -584,7 +584,7 @@ static void run_session(cb_socket connection)
                    cb_file_rx_begin(&file_rx,data,header.length)!=0) {valid=0;break;}
                 files_receiving_sequence=header.sequence;files_received_progress=0;
                 files_receiving_deadline=cb_net_now()+PEER_TIMEOUT_MS;
-                printf("Receiving %u files (%llu bytes).\n",file_rx.count,(unsigned long long)file_rx.total);
+                printf("Receiving %u file/directory entries (%llu bytes).\n",file_rx.count,(unsigned long long)file_rx.total);
                 if(send_frame(connection,CB_FILES_CREDIT,header.sequence,NULL,0)!=0) valid=0;
                 last_sent=cb_net_now();break;
             case CB_FILES_CHUNK:
@@ -598,7 +598,7 @@ static void run_session(cb_socket connection)
             case CB_FILES_END: {
                 if(!file_rx.directory || header.sequence!=files_receiving_sequence ||
                    cb_file_rx_end(&file_rx,data,header.length)!=0) {valid=0;break;}
-                cb_content content={0};content.files=file_rx.paths;content.file_count=file_rx.count;
+                cb_content content={0};content.files=file_rx.roots;content.file_count=file_rx.root_count;
                 if(cb_platform_set_content(&content)!=0) {valid=0;break;}
                 file_rx.published=1;cb_file_rx_close(&file_rx);
                 incoming_sequence=header.sequence;
@@ -826,7 +826,7 @@ static void run_session(cb_socket connection)
                 queued_files.file_count,&manifest,&meta_length);
             cb_content_free(&queued_files);
             if(opened!=0) {
-                fprintf(stderr,"Files rejected: only readable regular files with unique portable names, up to 64 files / 1 GiB.\n");
+                fprintf(stderr,"Files rejected: readable files/folders with portable names; up to 64 roots, 1024 entries, 32 levels / 1 GiB.\n");
                 if(paste_waiting) cb_keyboard_finish_paste(0);
                 paste_waiting=0;
             } else {
@@ -835,7 +835,7 @@ static void run_session(cb_socket connection)
                 free(manifest);if(sent!=0) break;
                 files_sending=1;files_chunk_ready=0;files_sent_progress=0;
                 last_sent=cb_net_now();ack_deadline=last_sent+PEER_TIMEOUT_MS;
-                printf("Sending %u files (%llu bytes).\n",file_tx.count,(unsigned long long)file_tx.total);
+                printf("Sending %u file/directory entries (%llu bytes).\n",file_tx.count,(unsigned long long)file_tx.total);
             }
         }
         if(files_sending && files_chunk_ready) {

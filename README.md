@@ -1,9 +1,9 @@
 # Clipboard Bridge C
 
-通过 Tailscale 在 macOS 与 Windows 之间双向同步纯文本、图片和普通文件。Mac 端可以为官方 Moonlight 提供 Command 快捷键映射、三指前进/后退和两指速度对应的 Windows 临时滚动行数。
+通过 Tailscale 在 macOS 与 Windows 之间双向同步纯文本、图片、普通文件和文件夹。Mac 端可以为官方 Moonlight 提供 Command 快捷键映射、三指前进/后退和两指速度对应的 Windows 临时滚动行数。
 
 - [图片同步、编译与启动](docs/images.md)
-- [普通文件同步](docs/files.md)
+- [文件与文件夹同步](docs/files.md)
 - [键盘映射](docs/keyboard.md)
 - [Caps Lock 短按/长按](docs/caps-lock.md)
 - [妙控板设置](docs/trackpad.md)
