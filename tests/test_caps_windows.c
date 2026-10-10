@@ -114,6 +114,10 @@ int main(void)
     assert(next_calls == 5);
     reset(0);
     next_result = 1;
+    caps_seen=caps_blocked=0;
+    hook_key(VK_LWIN, WM_KEYDOWN, CB_CAPS_TAG);
+    assert(caps_seen==1 && caps_blocked==1);
+    next_calls=0;
     hook_key(VK_CAPITAL, WM_KEYDOWN, 0);
     assert(!caps_on && !caps_down && next_calls == 1);
     reset(0);

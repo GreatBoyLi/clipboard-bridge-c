@@ -4,6 +4,7 @@
 #include <windows.h>
 #endif
 #include <string.h>
+#include <stdio.h>
 #include "caps_remote.h"
 
 #define CB_CAPS_TAG ((ULONG_PTR)0x43424341u)
@@ -11,6 +12,10 @@ static int caps_on;
 static unsigned char caps_down;
 static unsigned char external_down[256];
 static int caps_healthy;
+/* 只统计本模块的控制按键，不记录用户输入内容。钩子内不输出日志。 */
+static unsigned caps_seen, caps_blocked;
+static int caps_win_observed, caps_space_observed;
+
 #ifndef CB_CAPS_TEST
 static int caps_input_pause(void);
 #endif
@@ -19,6 +24,17 @@ static int caps_input_pause(void);
 static LRESULT CALLBACK caps_hook(int code, WPARAM message, LPARAM parameter)
 {
     LRESULT next = CallNextHookEx(NULL, code, message, parameter);
+    if (code == HC_ACTION) {
+        const KBDLLHOOKSTRUCT *key = (const KBDLLHOOKSTRUCT *)parameter;
+        if (key->dwExtraInfo == CB_CAPS_TAG) {
+            unsigned bit = key->vkCode == VK_LWIN ? 1u :
+                           key->vkCode == VK_SPACE ? 2u :
+                           key->vkCode == VK_CAPITAL ? 4u : 0u;
+            if (message == WM_KEYUP || message == WM_SYSKEYUP) bit <<= 3;
+            caps_seen |= bit;
+            if (next != 0) caps_blocked |= bit;
+        }
+    }
     if (code == HC_ACTION && next == 0) {
         const KBDLLHOOKSTRUCT *key = (const KBDLLHOOKSTRUCT *)parameter;
         int down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
@@ -72,8 +88,16 @@ static int caps_execute(unsigned action)
     INPUT release[2];
     unsigned char owned[256] = {0};
     UINT count, sent, i, releases = 0;
-    if (!caps_healthy || (action != CB_CAPS_SHORT && action != CB_CAPS_LONG)) return 0;
-    if (caps_busy() || caps_down) return 0;
+    caps_seen=caps_blocked=0;caps_win_observed=caps_space_observed=-1;
+    if (!caps_healthy || (action != CB_CAPS_SHORT && action != CB_CAPS_LONG)) {
+        fprintf(stderr,"[caps] request rejected: worker unavailable or invalid action\n");return 0;
+    }
+    if (caps_busy() || caps_down) {
+        fprintf(stderr,"[caps] request rejected: a key is still held\n");return 0;
+    }
+    fprintf(stderr,"[caps] action=%s caps=%s target=%s\n",
+            action==CB_CAPS_LONG?"long":"short",caps_on?"on":"off",
+            (action==CB_CAPS_LONG || caps_on)?"CapsLock":"Win+Space");
     if (action == CB_CAPS_LONG || caps_on) {
         caps_key(&inputs[0], VK_CAPITAL, 0);
         caps_key(&inputs[1], VK_CAPITAL, KEYEVENTF_KEYUP);
@@ -91,13 +115,19 @@ static int caps_execute(unsigned action)
          * 等待期间继续处理钩子消息，并响应会话停止。 */
         sent = SendInput(1, inputs, (int)sizeof(INPUT));
         if (sent == 1 && caps_input_pause()) {
+            caps_win_observed=(GetAsyncKeyState(VK_LWIN)&0x8000)!=0;
             sent += SendInput(1, &inputs[1], (int)sizeof(INPUT));
-            if (sent == 2 && caps_input_pause())
+            if (sent == 2 && caps_input_pause()) {
+                caps_space_observed=(GetAsyncKeyState(VK_SPACE)&0x8000)!=0;
                 sent += SendInput(2, &inputs[2], (int)sizeof(INPUT));
+            }
         }
     } else {
         sent = SendInput(count, inputs, (int)sizeof(INPUT));
     }
+    fprintf(stderr,"[caps] submitted=%u/%u win-down=%d space-down=%d hook-seen=0x%02x hook-blocked=0x%02x\n",
+            sent,count,caps_win_observed,caps_space_observed,caps_seen,caps_blocked);
+    fflush(stderr);
     if (sent == count) return 1;
     /* 只清理确实已提交但尚未松开的本模块按键；外部按键优先。 */
     if (sent > count) sent = count;
