@@ -11,6 +11,9 @@ static int caps_on;
 static unsigned char caps_down;
 static unsigned char external_down[256];
 static int caps_healthy;
+#ifndef CB_CAPS_TEST
+static int caps_input_pause(void);
+#endif
 
 /* 钩子只跟踪 Caps 和外部按住的键，不记录字符、不吞掉输入。 */
 static LRESULT CALLBACK caps_hook(int code, WPARAM message, LPARAM parameter)
@@ -82,7 +85,19 @@ static int caps_execute(unsigned action)
         caps_key(&inputs[3], VK_LWIN, KEYEVENTF_KEYUP | KEYEVENTF_EXTENDEDKEY);
         count = 4;
     }
-    sent = SendInput(count, inputs, (int)sizeof(INPUT));
+    if (count == 4) {
+        /* Win+空格由系统输入法服务处理。分阶段保留按住状态，
+         * 避免四个事件瞬间提交后，处理切换时 Win 已经松开。
+         * 等待期间继续处理钩子消息，并响应会话停止。 */
+        sent = SendInput(1, inputs, (int)sizeof(INPUT));
+        if (sent == 1 && caps_input_pause()) {
+            sent += SendInput(1, &inputs[1], (int)sizeof(INPUT));
+            if (sent == 2 && caps_input_pause())
+                sent += SendInput(2, &inputs[2], (int)sizeof(INPUT));
+        }
+    } else {
+        sent = SendInput(count, inputs, (int)sizeof(INPUT));
+    }
     if (sent == count) return 1;
     /* 只清理确实已提交但尚未松开的本模块按键；外部按键优先。 */
     if (sent > count) sent = count;
@@ -110,6 +125,29 @@ static HANDLE caps_thread, caps_ready, caps_stop, caps_request, caps_done;
 static volatile LONG caps_enabled;
 static unsigned caps_action;
 static int caps_result;
+
+/* 不是 Sleep：低级键盘钩子要求安装线程持续处理消息。 */
+static int caps_input_pause(void)
+{
+    ULONGLONG deadline = GetTickCount64() + 40;
+    MSG message;
+    for (;;) {
+        ULONGLONG now = GetTickCount64();
+        DWORD wait;
+        if (WaitForSingleObject(caps_stop, 0) == WAIT_OBJECT_0) return 0;
+        if (now >= deadline) return 1;
+        wait = MsgWaitForMultipleObjects(1, &caps_stop, FALSE,
+                                        (DWORD)(deadline - now), QS_ALLINPUT);
+        if (wait == WAIT_OBJECT_0 || wait == WAIT_FAILED) return 0;
+        while (PeekMessageW(&message, NULL, 0, 0, PM_REMOVE)) {
+            if (message.message == WM_QUIT) return 0;
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+            if (WaitForSingleObject(caps_stop, 0) == WAIT_OBJECT_0) return 0;
+        }
+    }
+}
+
 
 static DWORD WINAPI caps_worker(void *unused)
 {

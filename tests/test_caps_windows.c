@@ -33,7 +33,10 @@ typedef struct { DWORD type; KEYBDINPUT ki; } INPUT;
 static LRESULT next_result;
 static unsigned next_calls;
 static unsigned send_calls;
-static UINT first_send_count;
+static UINT send_limits[4];
+static unsigned pause_calls;
+static unsigned fail_pause;
+static int caps_input_pause(void) { return ++pause_calls != fail_pause; }
 static unsigned char async_down[256];
 static INPUT submitted[16];
 static UINT submitted_count;
@@ -43,7 +46,8 @@ static short GetAsyncKeyState(int key)
 { return (short)(async_down[key] ? 0x8000u : 0u); }
 static UINT SendInput(UINT count, INPUT *input, int size)
 {
-    UINT accepted = send_calls++ == 0 && first_send_count != UINT32_MAX ? first_send_count : count;
+    UINT limit = send_limits[send_calls++];
+    UINT accepted = limit < count ? limit : count;
     assert(size == (int)sizeof(INPUT));
     assert(submitted_count + count <= 16);
     memcpy(&submitted[submitted_count], input, count * sizeof(INPUT));
@@ -58,7 +62,8 @@ static void reset(int on)
     memset(async_down, 0, sizeof(async_down));
     memset(submitted, 0, sizeof(submitted));
     next_result = 0; next_calls = 0; send_calls = 0;
-    first_send_count = UINT32_MAX; submitted_count = 0;
+    for (unsigned i=0;i<4;++i) send_limits[i]=UINT32_MAX;
+    pause_calls=fail_pause=0; submitted_count = 0;
 }
 static void hook_key(DWORD key, WPARAM message, ULONG_PTR tag)
 {
@@ -78,6 +83,7 @@ int main(void)
     reset(0);
     assert(caps_execute(CB_CAPS_SHORT) == 1 && submitted_count == 4);
     assert(submitted[0].ki.wVk == VK_LWIN && submitted[1].ki.wVk == VK_SPACE);
+    assert(send_calls == 3 && pause_calls == 2);
     assert(submitted[2].ki.dwFlags == KEYEVENTF_KEYUP);
     assert(submitted[3].ki.dwFlags == (KEYEVENTF_KEYUP | KEYEVENTF_EXTENDEDKEY));
     reset(1);
@@ -111,18 +117,23 @@ int main(void)
     hook_key(VK_CAPITAL, WM_KEYDOWN, 0);
     assert(!caps_on && !caps_down && next_calls == 1);
     reset(0);
-    first_send_count = 2;
-    assert(!caps_execute(CB_CAPS_SHORT) && send_calls == 2 && submitted_count == 6);
+    send_limits[2] = 0;
+    assert(!caps_execute(CB_CAPS_SHORT) && send_calls == 4 && submitted_count == 6);
     assert(submitted[4].ki.wVk == VK_SPACE && submitted[4].ki.dwFlags == KEYEVENTF_KEYUP);
     assert(submitted[5].ki.wVk == VK_LWIN && (submitted[5].ki.dwFlags & KEYEVENTF_KEYUP));
-    assert(!caps_execute(CB_CAPS_LONG) && send_calls == 2);
+    assert(!caps_execute(CB_CAPS_LONG) && send_calls == 4);
     reset(0);
-    first_send_count = 0;
+    send_limits[0] = 0;
     assert(!caps_execute(CB_CAPS_SHORT) && send_calls == 1);
     reset(1);
-    first_send_count = 1;
+    send_limits[0] = 1;
     assert(!caps_execute(CB_CAPS_LONG) && send_calls == 2 && submitted_count == 3);
     assert(submitted[2].ki.wVk == VK_CAPITAL && submitted[2].ki.dwFlags == KEYEVENTF_KEYUP);
+    reset(0);
+    fail_pause=1;
+    assert(!caps_execute(CB_CAPS_SHORT) && send_calls==2);
+    assert(submitted_count==2 && submitted[1].ki.wVk==VK_LWIN);
+    assert(submitted[1].ki.dwFlags & KEYEVENTF_KEYUP);
     puts("caps_windows decision / hook / SendInput tests passed");
     return 0;
 }
