@@ -124,6 +124,14 @@ int main(void)
     assert(cb_key_equal("abcd", "abcd", 4));
     assert(!cb_key_equal("abcd", "abce", 4));
 
+    original=(cb_header){CB_SCROLL_CAPS,0,0};
+    cb_encode_header(wire,&original);assert(cb_decode_header(wire,&decoded)==0);
+    original=(cb_header){CB_SCROLL_LINES,0,1};
+    cb_encode_header(wire,&original);assert(cb_decode_header(wire,&decoded)==0);
+    original.length=2;
+    cb_encode_header(wire,&original);assert(cb_decode_header(wire,&decoded)<0);
+    original.length=1;original.sequence=1;
+    cb_encode_header(wire,&original);assert(cb_decode_header(wire,&decoded)<0);
     puts("Protocol tests passed");
     return 0;
 }

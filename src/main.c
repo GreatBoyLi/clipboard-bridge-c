@@ -9,7 +9,8 @@
  *   5. 将远端文本写入本机剪贴板；
  *   6. 连接中断后重新等待或主动重连。
  *
- * 当前只支持文本，不处理图片、文件或快捷键。
+ * 剪贴板当前只支持文本；Mac 可选键盘映射及两指速度控制。
+ * 不同步图片或文件内容。
  *
  * 网络数据本身没有额外加密：
  * 正式使用时必须通过 Tailscale 地址连接。
@@ -18,6 +19,8 @@
  * 日志不输出剪贴板内容或配对密钥。
  */
 
+#include "keyboard.h"
+#include "scroll_control.h"
 #include "net.h"
 #include "platform.h"
 #include "protocol.h"
@@ -62,6 +65,7 @@
  * 不在信号处理函数里调用网络、剪贴板或内存管理函数。
  */
 static volatile sig_atomic_t stop_requested = 0;
+static int scroll_enabled;
 
 static void handle_signal(int signal_number)
 {
@@ -78,11 +82,12 @@ static void print_usage(const char *program)
         "  %s --generate-key PATH\n"
         "\n"
         "Listen for a connection:\n"
-        "  %s --listen IP --key-file PATH [--port PORT]\n"
+        "  %s --listen IP --key-file PATH [--port PORT] [--scroll-lines]\n"
         "\n"
         "Connect to another device:\n"
-        "  %s --connect HOST --key-file PATH [--port PORT]\n"
+        "  %s --connect HOST --key-file PATH [--port PORT] [--keyboard] [--redo ctrl-y|ctrl-shift-z]\n"
         "\n"
+        "Keyboard mapping is optional and macOS only.\n"
         "Use a Tailscale address for normal operation.\n",
         program, program, program);
 }
@@ -442,6 +447,10 @@ static void run_session(cb_socket connection)
 {
     char *queued_text = NULL;
     size_t queued_length = 0;
+    int paste_waiting = 0;
+    int scroll_peer_ready=0;
+    unsigned last_lines=0;
+    uint64_t scroll_sent=0;
 
     uint32_t outgoing_sequence = 0;
     uint32_t incoming_sequence = 0;
@@ -456,7 +465,9 @@ static void run_session(cb_socket connection)
      * 不自动覆盖两台设备各自已有的内容。
      */
     cb_platform_reset();
+    cb_keyboard_connected(1);
 
+    if(scroll_enabled && send_frame(connection,CB_SCROLL_CAPS,0,NULL,0)!=0) goto session_done;
     puts("Connected and authenticated. Clipboard synchronization active.");
 
     while (!stop_requested) {
@@ -547,6 +558,20 @@ static void run_session(cb_socket connection)
                 last_sent = cb_net_now();
                 break;
 
+            case CB_SCROLL_CAPS:
+#ifdef __APPLE__
+                scroll_peer_ready=1;
+#else
+                valid=0;
+#endif
+                break;
+            case CB_SCROLL_LINES:
+                if(!scroll_enabled || data[0]>5) valid=0;
+                else if(cb_scroll_set(data[0])!=0) {
+                    fprintf(stderr,"Scroll guard unavailable; stopping to restore settings.\n");
+                    valid=0;stop_requested=1;
+                }
+                break;
             case CB_PONG:
                 break;
 
@@ -566,6 +591,17 @@ static void run_session(cb_socket connection)
             last_received = cb_net_now();
         }
 
+        /* 只给声明支持的已认证 Windows 发送；不碰剪贴板 ACK 序号。
+         * 200ms 活跃续租，0 立即释放，守护端独立检测超时。 */
+        if(scroll_peer_ready) {
+            unsigned lines=cb_keyboard_scroll_lines();
+            now=cb_net_now();
+            if(lines!=last_lines || (lines && now-scroll_sent>=200)) {
+                unsigned char body=(unsigned char)lines;
+                if(send_frame(connection,CB_SCROLL_LINES,0,&body,1)!=0) break;
+                last_lines=lines;scroll_sent=now;last_sent=now;
+            }
+        }
         /*
          * 所有剪贴板调用都在主线程执行。
          * 平台接口会抑制程序刚刚写入的远端文本。
@@ -573,6 +609,12 @@ static void run_session(cb_socket connection)
         char *local_text = NULL;
         size_t local_length = 0;
 
+        /* 粘贴请求不强制重发 Mac 的旧内容，避免覆盖 Windows 复制的文件。
+         * 先检查是否有新文字，再决定是否需等网络确认。
+         */
+        /* 每轮都服务可选手势观察器，不能在等待文字 ACK 时暂停主事件循环。 */
+        int paste_requested = cb_keyboard_take_paste();
+        if (!paste_waiting && paste_requested) paste_waiting = 1;
         int changed = cb_platform_poll(&local_text, &local_length);
 
         if (changed == 1) {
@@ -589,9 +631,13 @@ static void run_session(cb_socket connection)
                 local_text = NULL;
             } else {
                 fprintf(stderr, "Local text exceeds the protocol limits.\n");
+                if (paste_waiting) cb_keyboard_finish_paste(0);
+                paste_waiting = 0;
             }
         } else if (changed < 0) {
             fprintf(stderr, "Clipboard read failed or text was unsupported.\n");
+            if (paste_waiting) cb_keyboard_finish_paste(0);
+            paste_waiting = 0;
         }
 
         free(local_text);
@@ -617,6 +663,14 @@ static void run_session(cb_socket connection)
             ack_deadline = last_sent + ACK_TIMEOUT_MS;
         }
 
+        /* 必须在处理最新剪贴板及发送队列之后放行，不能在旧 ACK 到来时提前粘贴。
+         * 没有 Mac 新文字时，不发送 TEXT，直接使用 Windows 当前剪贴板。
+         */
+        if (paste_waiting && queued_text == NULL && pending_ack == 0) {
+            cb_keyboard_finish_paste(1);
+            paste_waiting = 0;
+        }
+
         now = cb_net_now();
 
         if (now - last_sent >= HEARTBEAT_MS) {
@@ -628,6 +682,9 @@ static void run_session(cb_socket connection)
         }
     }
 
+session_done:
+    if(scroll_enabled) (void)cb_scroll_set(0);
+    cb_keyboard_connected(0);
     free(queued_text);
 
     puts("Disconnected. Pending old text will not be replayed.");
@@ -647,6 +704,8 @@ static void wait_before_retry(void)
 
 int main(int argc, char **argv)
 {
+    int guard_result=cb_scroll_guard_entry(argc,argv);
+    if(guard_result>=0) return guard_result;
     /*
      * 禁用标准输出缓冲，让连接和同步日志立即显示。
      * _IONBF 不使用缓冲区，允许长度为 0，兼容 Mac 和 Windows。
@@ -666,12 +725,20 @@ int main(int argc, char **argv)
     const char *port = DEFAULT_PORT;
     const char *key_path = NULL;
     int port_seen = 0;
+    int keyboard_enabled = 0, redo_seen = 0, redo_shift_z = 0;
 
     /*
      * 参数按“选项 + 值”解析。
      * 不接受未知选项，也不允许同时指定监听和连接模式。
      */
     for (int i = 1; i < argc; ++i) {
+        if(strcmp(argv[i],"--scroll-lines")==0 && !scroll_enabled) {
+            scroll_enabled=1;continue;
+        }
+        if (strcmp(argv[i], "--keyboard") == 0 && !keyboard_enabled) {
+            keyboard_enabled = 1;
+            continue;
+        }
         if (i + 1 >= argc) {
             print_usage(argv[0]);
             return 1;
@@ -693,19 +760,27 @@ int main(int argc, char **argv)
         } else if (strcmp(option, "--port") == 0 && !port_seen) {
             port = value;
             port_seen = 1;
+        } else if (strcmp(option, "--redo") == 0 && !redo_seen &&
+                   (strcmp(value, "ctrl-y") == 0 || strcmp(value, "ctrl-shift-z") == 0)) {
+            redo_seen = 1;
+            redo_shift_z = strcmp(value, "ctrl-shift-z") == 0;
         } else {
             print_usage(argv[0]);
             return 1;
         }
     }
 
-    if (listener_mode == -1 ||
+    if ((redo_seen && !keyboard_enabled) || listener_mode == -1 ||
         address == NULL || *address == '\0' ||
         key_path == NULL || !valid_port(port)) {
         print_usage(argv[0]);
         return 1;
     }
 
+#ifndef _WIN32
+    if(scroll_enabled) {fprintf(stderr,"--scroll-lines is Windows only; use CB_SCROLL_LINES=1 on Mac.\n");return 1;}
+#endif
+    if(scroll_enabled && listener_mode!=1) {print_usage(argv[0]);return 1;}
     char key[CB_KEY_SIZE];
 
     if (load_key(key_path, key) != 0) {
@@ -723,12 +798,23 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    if (keyboard_enabled && cb_keyboard_init(redo_shift_z) != 0) {
+        fprintf(stderr, "Keyboard mapping initialization failed (macOS only).\n");
+        cb_platform_close();
+        cb_net_cleanup();
+        return 1;
+    }
+
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
 
     cb_socket listener = CB_INVALID;
     int exit_code = 0;
+    if(scroll_enabled && cb_scroll_init()!=0) {
+        fprintf(stderr,"Cannot start scroll setting guard; no setting changed.\n");
+        exit_code=1;goto cleanup;
+    }
 
     if (listener_mode) {
         listener = cb_net_listen(address, port);
@@ -793,7 +879,9 @@ int main(int argc, char **argv)
     }
 
 cleanup:
+    cb_scroll_close();
     cb_net_close(listener);
+    cb_keyboard_close();
     cb_platform_close();
     cb_net_cleanup();
 

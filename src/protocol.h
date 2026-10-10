@@ -58,7 +58,9 @@ enum {
     CB_TEXT = 2,
     CB_ACK  = 3,
     CB_PING = 4,
-    CB_PONG = 5
+    CB_PONG = 5,
+    CB_SCROLL_CAPS = 6, /* Windows 声明已启用行数控制，正文为空 */
+    CB_SCROLL_LINES = 7 /* 正文一字节：0 恢复，1~5 临时行数 */
 };
 
 /*

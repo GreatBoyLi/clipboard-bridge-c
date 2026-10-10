@@ -20,10 +20,15 @@ clang \
   -O2 \
   -fobjc-arc \
   -framework AppKit \
+  -framework ApplicationServices \
+  -pthread \
   -Isrc \
   src/protocol.c \
   src/net.c \
   src/platform_macos.m \
+  src/keyboard_map.c \
+  src/keyboard_macos.m \
+  src/multitouch_macos.m \
   src/main.c \
   -o build/clipboard-bridge
 

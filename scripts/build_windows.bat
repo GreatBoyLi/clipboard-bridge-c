@@ -34,6 +34,7 @@ cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
   ..\src\protocol.c ^
   ..\src\net.c ^
   ..\src\platform_windows.c ^
+  ..\src\scroll_windows.c ^
   ..\src\main.c ^
   /Fe:clipboard-bridge.exe ^
   /link ws2_32.lib user32.lib bcrypt.lib
@@ -60,6 +61,13 @@ cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
   /Fe:test_net.exe ^
   /link ws2_32.lib
 
+if errorlevel 1 goto failed
+
+REM 行数映射与恢复租约测试，不访问系统设置。
+cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
+  /I..\src ..\tests\test_scroll_lines.c /Fe:test_scroll_lines.exe
+if errorlevel 1 goto failed
+test_scroll_lines.exe
 if errorlevel 1 goto failed
 
 REM 编译完成后执行不访问系统剪贴板的测试。

@@ -106,6 +106,11 @@ int cb_decode_header(
         return header->length == 0
             && header->sequence != 0 ? 0 : -1;
 
+    case CB_SCROLL_CAPS:
+        return header->length == 0 && header->sequence == 0 ? 0 : -1;
+    case CB_SCROLL_LINES:
+        return header->length == 1 && header->sequence == 0 ? 0 : -1;
+
     case CB_PING:
     case CB_PONG:
         /* 心跳消息不携带消息体。 */
