@@ -90,3 +90,7 @@ int main(void) {
     }
     puts("Simultaneous images, paste ACK and interrupted/malformed transfer tests passed");
 }
+
+int cb_keyboard_caps_enabled(void) {return 0;}
+void cb_keyboard_caps_ready(int ready) {(void)ready;}
+unsigned cb_keyboard_caps_take(void) {return 0;}

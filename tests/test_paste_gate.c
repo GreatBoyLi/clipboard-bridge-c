@@ -98,3 +98,7 @@ int cb_platform_poll_content(cb_content *c) {
     memset(c,0,sizeof(*c));return cb_platform_poll(&c->text,&c->text_length);
 }
 int cb_platform_set_content(const cb_content *c) {return cb_platform_set(c->text,c->text_length);}
+
+int cb_keyboard_caps_enabled(void) {return 0;}
+void cb_keyboard_caps_ready(int ready) {(void)ready;}
+unsigned cb_keyboard_caps_take(void) {return 0;}

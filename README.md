@@ -4,6 +4,7 @@
 
 - [图片同步、编译与启动](docs/images.md)
 - [键盘映射](docs/keyboard.md)
+- [Caps Lock 短按/长按](docs/caps-lock.md)
 - [妙控板设置](docs/trackpad.md)
 
 Mac 使用 `bash scripts/build_mac.sh` 编译；Windows 在 Visual Studio x64 Native Tools Command Prompt 运行 `scripts\build_windows.bat`。两个端点需要使用同一份配对密钥，正式连接使用 Tailscale 地址。密钥不要加入 Git。

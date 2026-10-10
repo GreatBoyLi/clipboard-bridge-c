@@ -65,7 +65,11 @@ enum {
     CB_SCROLL_LINES = 7, /* 正文一字节：0 恢复，1~5 临时行数 */
     CB_IMAGE_BEGIN = 8, /* 12 字节格式及长度；非零剪贴板序号 */
     CB_IMAGE_CHUNK = 9, /* 1~16384 字节；沿用 BEGIN 序号 */
-    CB_IMAGE_CREDIT = 10 /* 非末块的接收确认，允许继续发送一块 */
+    CB_IMAGE_CREDIT = 10, /* 非末块的接收确认，允许继续发送一块 */
+    CB_CAPS_ENABLE = 11, /* seq=0，空正文，请求启动 Windows 按键线程 */
+    CB_CAPS_READY = 12, /* seq=0，一字节：1 就绪，0 不可用 */
+    CB_CAPS_ACTION = 13, /* 独立递增 seq，一字节短按=1/长按=2 */
+    CB_CAPS_RESULT = 14 /* 原动作 seq，一字节：1 已提交，0 失败 */
 };
 
 /*

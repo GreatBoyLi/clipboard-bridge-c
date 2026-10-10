@@ -9,8 +9,8 @@ clang "${flags[@]}" src/net.c tests/test_net.c -o build/test_net
 clang "${flags[@]}" src/keyboard_map.c tests/test_keyboard_map.c -o build/test_keyboard_map
 clang "${flags[@]}" src/protocol.c src/content.c src/net.c tests/test_paste_gate.c -o build/test_paste_gate
 # 使用模拟系统焦点，不创建真实键盘监听或改变用户的前台应用。
-clang "${flags[@]}" -fobjc-arc -framework AppKit -framework ApplicationServices -pthread \
-  src/protocol.c src/keyboard_map.c src/multitouch_macos.m tests/test_keyboard_focus.m -o build/test_keyboard_focus
+clang "${flags[@]}" -fobjc-arc -framework AppKit -framework ApplicationServices -framework IOKit -pthread \
+  src/protocol.c src/keyboard_map.c src/multitouch_macos.m src/caps_hid_macos.m tests/test_keyboard_focus.m -o build/test_keyboard_focus
 ./build/test_protocol
 ./build/test_net
 ./build/test_keyboard_map
@@ -20,8 +20,8 @@ clang "${flags[@]}" -fobjc-arc -framework AppKit -framework ApplicationServices 
 
 # 专用 Command 组合的整个生命周期不能含 Alt，避免目标输入框失焦。
 clang "${flags[@]}" src/keyboard_map.c tests/test_command_focus.c -o build/test_command_focus
-clang "${flags[@]}" -fobjc-arc -framework AppKit -framework ApplicationServices -pthread \
-  src/protocol.c src/keyboard_map.c src/multitouch_macos.m tests/test_keyboard_relay.m -o build/test_keyboard_relay
+clang "${flags[@]}" -fobjc-arc -framework AppKit -framework ApplicationServices -framework IOKit -pthread \
+  src/protocol.c src/keyboard_map.c src/multitouch_macos.m src/caps_hid_macos.m tests/test_keyboard_relay.m -o build/test_keyboard_relay
 ./build/test_command_focus
 ./build/test_keyboard_relay
 
@@ -34,8 +34,8 @@ clang "${flags[@]}" src/keyboard_map.c tests/test_common_shortcuts.c -o build/te
 ./build/test_common_shortcuts
 
 # 三指导航和连续滚动：仅模拟系统事件，输出全部由测试截获。
-clang "${flags[@]}" -fobjc-arc -framework AppKit -framework ApplicationServices -pthread \
-  src/protocol.c src/keyboard_map.c src/multitouch_macos.m tests/test_trackpad_relay.m -o build/test_trackpad_relay
+clang "${flags[@]}" -fobjc-arc -framework AppKit -framework ApplicationServices -framework IOKit -pthread \
+  src/protocol.c src/keyboard_map.c src/multitouch_macos.m src/caps_hid_macos.m tests/test_trackpad_relay.m -o build/test_trackpad_relay
 ./build/test_trackpad_relay
 
 clang "${flags[@]}" tests/test_touch_swipe.c -o build/test_touch_swipe
@@ -62,3 +62,16 @@ clang "${flags[@]}" src/protocol.c src/content.c src/net.c tests/test_image_sess
 ./build/test_image_session
 clang "${flags[@]}" tests/test_windows_dib.c -o build/test_windows_dib
 ./build/test_windows_dib
+
+# Caps 模拟物理输入和网络；不会监听真实键盘或注入实际按键。
+clang "${flags[@]}" tests/test_caps_hold.c -o build/test_caps_hold
+./build/test_caps_hold
+clang "${flags[@]}" -fobjc-arc -framework Foundation -framework IOKit tests/test_caps_hid.m -o build/test_caps_hid
+./build/test_caps_hid
+clang "${flags[@]}" -fobjc-arc -framework AppKit -framework ApplicationServices -framework IOKit -pthread \
+  src/protocol.c src/keyboard_map.c src/multitouch_macos.m src/caps_hid_macos.m tests/test_caps_relay.m -o build/test_caps_relay
+./build/test_caps_relay
+clang "${flags[@]}" src/protocol.c src/content.c src/net.c tests/test_caps_session.c -o build/test_caps_session
+./build/test_caps_session
+clang "${flags[@]}" tests/test_caps_windows.c -o build/test_caps_windows
+./build/test_caps_windows

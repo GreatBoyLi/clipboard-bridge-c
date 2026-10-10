@@ -22,6 +22,7 @@ clang \
   -framework AppKit \
   -framework ImageIO \
   -framework ApplicationServices \
+  -framework IOKit \
   -pthread \
   -Isrc \
   src/protocol.c \
@@ -31,6 +32,7 @@ clang \
   src/keyboard_map.c \
   src/keyboard_macos.m \
   src/multitouch_macos.m \
+  src/caps_hid_macos.m \
   src/main.c \
   -o build/clipboard-bridge
 

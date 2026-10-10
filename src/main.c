@@ -25,6 +25,10 @@
 #include "platform.h"
 #include "protocol.h"
 #include "content.h"
+#include "caps_action.h"
+#ifdef _WIN32
+#include "caps_remote.h"
+#endif
 
 #include <ctype.h>
 #include <fcntl.h>
@@ -457,6 +461,9 @@ static void run_session(cb_socket connection)
     uint32_t receiving_sequence=0;
     uint64_t receiving_deadline=0;
     int paste_waiting = 0;
+    int caps_requested=0,caps_ready=0;
+    uint32_t caps_outgoing=0,caps_incoming=0,caps_pending=0;
+    uint64_t caps_deadline=0;
     int scroll_peer_ready=0;
     unsigned last_lines=0;
     uint64_t scroll_sent=0;
@@ -476,6 +483,11 @@ static void run_session(cb_socket connection)
     cb_platform_reset();
     cb_keyboard_connected(1);
 
+    cb_keyboard_caps_ready(0);
+    if(cb_keyboard_caps_enabled()) {
+        if(send_frame(connection,CB_CAPS_ENABLE,0,NULL,0)!=0) goto session_done;
+        caps_requested=1;
+    }
     if(scroll_enabled && send_frame(connection,CB_SCROLL_CAPS,0,NULL,0)!=0) goto session_done;
     puts("Connected and authenticated. Clipboard synchronization active.");
 
@@ -487,6 +499,9 @@ static void run_session(cb_socket connection)
             break;
         }
 
+        if(caps_pending && now>=caps_deadline) {
+            fprintf(stderr,"Caps action confirmation timed out; cancelling session.\n");break;
+        }
         if (pending_ack != 0 && now >= ack_deadline) {
             fprintf(stderr, "Clipboard acknowledgement timed out.\n");
             break;
@@ -512,6 +527,47 @@ static void run_session(cb_socket connection)
             int valid = 1;
 
             switch (header.type) {
+            case CB_CAPS_ENABLE:
+#ifdef _WIN32
+                if(caps_requested) {valid=0;break;}
+                caps_requested=1;caps_ready=cb_caps_remote_init();
+                {unsigned char status=(unsigned char)caps_ready;
+                 if(send_frame(connection,CB_CAPS_READY,0,&status,1)!=0) valid=0;}
+                last_sent=cb_net_now();
+#else
+                valid=0;
+#endif
+                break;
+            case CB_CAPS_READY:
+#ifdef __APPLE__
+                if(!caps_requested || caps_ready || data[0]>1) {valid=0;break;}
+                caps_ready=data[0];cb_keyboard_caps_ready(caps_ready);
+                puts(caps_ready?"Windows Caps Lock mapping ready.":"Windows Caps Lock mapping unavailable; native key kept.");
+#else
+                valid=0;
+#endif
+                break;
+            case CB_CAPS_ACTION:
+#ifdef _WIN32
+                if(!caps_ready || header.sequence!=next_sequence(caps_incoming) ||
+                   (data[0]!=CB_CAPS_SHORT && data[0]!=CB_CAPS_LONG)) {valid=0;break;}
+                caps_incoming=header.sequence;
+                {unsigned char result=(unsigned char)cb_caps_remote_action(data[0]);
+                 if(send_frame(connection,CB_CAPS_RESULT,header.sequence,&result,1)!=0) valid=0;}
+                last_sent=cb_net_now();
+#else
+                valid=0;
+#endif
+                break;
+            case CB_CAPS_RESULT:
+#ifdef __APPLE__
+                if(!caps_pending || header.sequence!=caps_pending || data[0]>1) {valid=0;break;}
+                caps_pending=0;
+                if(!data[0]) fprintf(stderr,"Caps action was not applied (held keys, permissions or input failure).\n");
+#else
+                valid=0;
+#endif
+                break;
             case CB_IMAGE_BEGIN: {
                 uint32_t flags=((uint32_t)data[0]<<24)|((uint32_t)data[1]<<16)|((uint32_t)data[2]<<8)|data[3];
                 uint32_t text=((uint32_t)data[4]<<24)|((uint32_t)data[5]<<16)|((uint32_t)data[6]<<8)|data[7];
@@ -644,6 +700,15 @@ static void run_session(cb_socket connection)
             last_received = cb_net_now();
         }
 
+        if(caps_ready && !caps_pending) {
+            unsigned action=cb_keyboard_caps_take();
+            if(action) {
+                unsigned char body=(unsigned char)action;
+                caps_outgoing=next_sequence(caps_outgoing);
+                if(send_frame(connection,CB_CAPS_ACTION,caps_outgoing,&body,1)!=0) break;
+                caps_pending=caps_outgoing;last_sent=cb_net_now();caps_deadline=last_sent+IO_TIMEOUT_MS;
+            }
+        }
         /* 只给声明支持的已认证 Windows 发送；不碰剪贴板 ACK 序号。
          * 200ms 活跃续租，0 立即释放，守护端独立检测超时。 */
         if(scroll_peer_ready) {
@@ -755,6 +820,11 @@ static void run_session(cb_socket connection)
     }
 
 session_done:
+    cb_keyboard_caps_ready(0);
+#ifdef _WIN32
+    if(caps_requested) cb_caps_remote_close();
+#endif
+    (void)caps_incoming;
     if(scroll_enabled) (void)cb_scroll_set(0);
     cb_keyboard_connected(0);
     free(queued_text);free(sending_image);free(receiving_image);

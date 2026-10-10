@@ -37,6 +37,7 @@ cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
   ..\src\image_windows.c ^
   ..\src\platform_windows.c ^
   ..\src\scroll_windows.c ^
+  ..\src\caps_windows.c ^
   ..\src\main.c ^
   /Fe:clipboard-bridge.exe ^
   /link ws2_32.lib user32.lib bcrypt.lib ole32.lib windowscodecs.lib gdi32.lib
@@ -71,6 +72,18 @@ cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /I..\src ^
   /Fe:test_image_windows.exe /link ole32.lib windowscodecs.lib gdi32.lib user32.lib
 if errorlevel 1 goto failed
 test_image_windows.exe
+if errorlevel 1 goto failed
+
+REM Caps hold state and mocked Windows injection tests, no actual keyboard input.
+cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /I..\src ^
+  ..\tests\test_caps_hold.c /Fe:test_caps_hold.exe
+if errorlevel 1 goto failed
+test_caps_hold.exe
+if errorlevel 1 goto failed
+cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /I..\src ^
+  ..\tests\test_caps_windows.c /Fe:test_caps_windows.exe
+if errorlevel 1 goto failed
+test_caps_windows.exe
 if errorlevel 1 goto failed
 
 REM Build network tests.

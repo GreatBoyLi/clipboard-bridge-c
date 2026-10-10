@@ -5,6 +5,8 @@
 #include "protocol.h"
 #include "scroll_lines.h"
 #include "multitouch.h"
+#include "caps_hold.h"
+#include "caps_hid.h"
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +31,11 @@ static CGEventSourceRef event_source;
 static cb_key_state state;
 static unsigned forwarded_mods;
 static int context_active, wait_neutral;
+static int caps_enabled,caps_peer_ready;
+static cb_caps_hold caps_hold;
+typedef struct {unsigned action;pid_t pid;uint64_t time;} caps_request;
+static caps_request caps_queue[8];
+static unsigned caps_head,caps_count;
 static pid_t target_pid;
 /* 可选诊断只报告前台状态、修饰键和专用组合键，不记录正文或普通输入。 */
 static int debug_enabled;
@@ -104,11 +111,13 @@ static void release_state(void)
         sync_mods(NULL, 0, 0);
     }
     cb_key_reset(&state, redo_mode);
+    cb_caps_cancel(&caps_hold);
     forwarded_mods = 0;
     pthread_mutex_lock(&mutex);
     paste_phase = 0;
     paste_pid = 0;
     navigation_key = 0;
+    caps_head=caps_count=0;
     pthread_mutex_unlock(&mutex);
 }
 
@@ -200,6 +209,61 @@ static int check_context(void)
     }
 }
 
+/* Caps 操作与剪贴板请求独立交接，队列有界且不重放过期动作。 */
+static int caps_capture(void)
+{
+    pthread_mutex_lock(&mutex);
+    int ready=caps_enabled && caps_peer_ready && connected;
+    pthread_mutex_unlock(&mutex);return ready;
+}
+static void queue_caps(unsigned action)
+{
+    if(!action) return;
+    pthread_mutex_lock(&mutex);
+    if(caps_enabled && caps_peer_ready && connected && caps_count<8) {
+        unsigned tail=(caps_head+caps_count)%8;
+        caps_queue[tail]=(caps_request){action,target_pid,cb_caps_hid_now()};caps_count++;
+        if(debug_enabled) fprintf(stderr,"[caps] %s queued\n",action==CB_CAPS_LONG?"long":"short");
+    }
+    pthread_mutex_unlock(&mutex);
+}
+static void caps_changed(int down,uintptr_t device,uint64_t time)
+{
+    if(down<0) {if(caps_hold.device==device) cb_caps_cancel(&caps_hold);return;}
+    uint64_t now=cb_caps_hid_now();
+    if(!check_context() || !caps_capture() || wait_neutral ||
+       now<time || now-time>250 ||
+       physical_mods(CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState))) {
+        cb_caps_cancel(&caps_hold);return;
+    }
+    if(down) {
+        for(unsigned i=0;i<CB_KEY_COUNT;i++) if(state.held[i].down) return;
+        cb_caps_press(&caps_hold,device,target_pid,time);
+    } else queue_caps(cb_caps_release(&caps_hold,device,target_pid,time));
+}
+int cb_keyboard_caps_enabled(void) {return caps_enabled;}
+void cb_keyboard_caps_ready(int ready)
+{
+    pthread_mutex_lock(&mutex);
+    caps_peer_ready=ready && connected;
+    if(!caps_peer_ready) caps_head=caps_count=0;
+    pthread_mutex_unlock(&mutex);
+}
+unsigned cb_keyboard_caps_take(void)
+{
+    pid_t pid=foreground_moonlight();uint64_t now=cb_caps_hid_now();unsigned action=0;
+    pthread_mutex_lock(&mutex);
+    while(caps_count) {
+        caps_request request=caps_queue[caps_head];caps_head=(caps_head+1)%8;caps_count--;
+        if(connected && caps_peer_ready && caps_enabled && request.pid==pid && pid>0 &&
+           now>=request.time && now-request.time<=500 &&
+           !physical_mods(CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState))) {
+            action=request.action;break;
+        }
+    }
+    pthread_mutex_unlock(&mutex);return action;
+}
+
 static int primary_modifier(unsigned short key)
 {
     return key == 54 || key == 55 || key == 56 || key == 58 ||
@@ -226,6 +290,12 @@ static CGEventRef key_callback(CGEventTapProxy proxy, CGEventType type,
         if (!check_context()) return event;
         CGEventFlags flags = CGEventGetFlags(event);
         unsigned physical = physical_mods(flags);
+        unsigned short key = (unsigned short)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+        int capture_caps=caps_capture();
+        /* 实际计时来自 HID。吞掉系统锁定事件，避免又转发一次 Caps。 */
+        if(capture_caps && key==57) return NULL;
+        if(capture_caps && (physical || type==kCGEventKeyDown)) cb_caps_cancel(&caps_hold);
+        if(capture_caps) CGEventSetFlags(event, flags & ~kCGEventFlagMaskAlphaShift);
         if (wait_neutral) {
             if (physical == 0) {
                 wait_neutral = 0;
@@ -233,7 +303,6 @@ static CGEventRef key_callback(CGEventTapProxy proxy, CGEventType type,
             }
             return event;
         }
-        unsigned short key = (unsigned short)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
         int kind = type == kCGEventFlagsChanged ? CB_KEY_FLAGS :
                    type == kCGEventKeyDown ? CB_KEY_DOWN : CB_KEY_UP;
         cb_key_result result = cb_key_process(&state, kind, key, physical);
@@ -250,6 +319,7 @@ static CGEventRef key_callback(CGEventTapProxy proxy, CGEventType type,
         /* 丢弃设备相关左右位，只保留 Caps Lock、Fn 和数字键盘属性。 */
         CGEventFlags extras = flags & (kCGEventFlagMaskAlphaShift |
             kCGEventFlagMaskSecondaryFn | kCGEventFlagMaskNumericPad);
+        if(capture_caps) extras &= ~kCGEventFlagMaskAlphaShift;
         sync_mods(proxy, result.before, extras);
         if (result.paste_request) {
             pthread_mutex_lock(&mutex);
@@ -287,6 +357,9 @@ static void timer_callback(CFRunLoopTimerRef timer, void *user)
 {
     (void)timer; (void)user;
     if (!check_context()) return;
+    if(caps_capture() && !wait_neutral && !physical_mods(CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState)))
+        queue_caps(cb_caps_tick(&caps_hold,target_pid,cb_caps_hid_now()));
+    else cb_caps_cancel(&caps_hold);
     pthread_mutex_lock(&mutex);
     unsigned short nav = navigation_key;
     pid_t nav_pid = navigation_pid;
@@ -333,6 +406,7 @@ static void *event_thread(void *unused)
         CFRunLoopTimerRef timer = CFRunLoopTimerCreate(NULL, CFAbsoluteTimeGetCurrent(),
             0.05, 0, 0, timer_callback, NULL);
         int ok = event_source && tap && source && timer;
+        if(ok && caps_enabled && cb_caps_hid_start(caps_changed)!=0) ok=0;
         if (ok) {
             CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
             CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopCommonModes);
@@ -351,6 +425,7 @@ static void *event_thread(void *unused)
             CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, false);
         }
         release_state();
+        if(caps_enabled) cb_caps_hid_stop();
         if (tap) { CGEventTapEnable(tap, false); CFMachPortInvalidate(tap); }
         if (timer) { CFRunLoopTimerInvalidate(timer); CFRelease(timer); }
         if (source) CFRelease(source);
@@ -373,6 +448,9 @@ int cb_keyboard_init(int redo_shift_z)
     const char *scroll_option = getenv("CB_SCROLL_LINES");
     three_finger_enabled = swipe_option && strcmp(swipe_option, "1") == 0;
     scroll_lines_enabled = scroll_option && strcmp(scroll_option, "1") == 0;
+    const char *caps_option=getenv("CB_CAPS_KEY");
+    caps_enabled=caps_option && strcmp(caps_option,"1")==0;
+    caps_peer_ready=0;caps_head=caps_count=0;
     redo_mode = redo_shift_z;
     startup_status = 0;
     stopping = 0;
@@ -390,6 +468,7 @@ int cb_keyboard_init(int redo_shift_z)
         if(three_finger_enabled) puts("Raw three-finger navigation enabled (right=back, left=forward).");
     }
     if (scroll_lines_enabled) puts("Windows scroll line control enabled (linear 1-5; native scroll unchanged).");
+    if(caps_enabled) puts("Caps Lock physical listener enabled (short=Win+Space or caps off; hold 1s=toggle). Waiting for Windows readiness.");
     puts("Keyboard mapping enabled for foreground Moonlight while connected.");
     return 0;
 }
@@ -410,6 +489,7 @@ void cb_keyboard_connected(int value)
 {
     pthread_mutex_lock(&mutex);
     connected = value;
+    caps_peer_ready=0;caps_head=caps_count=0;
     if (!value) { paste_phase = 0; navigation_key = 0; }
     pthread_mutex_unlock(&mutex);
 }

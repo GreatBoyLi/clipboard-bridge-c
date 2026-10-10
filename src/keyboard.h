@@ -6,6 +6,9 @@
 int cb_keyboard_init(int redo_shift_z);
 void cb_keyboard_close(void);
 void cb_keyboard_connected(int connected);
+int cb_keyboard_caps_enabled(void);
+void cb_keyboard_caps_ready(int ready);
+unsigned cb_keyboard_caps_take(void);
 /* 主线程取得粘贴请求；只返回请求，不读取或重发 Mac 剪贴板旧内容。 */
 int cb_keyboard_take_paste(void);
 /* 主线程取两指速度对应的行数；0 表示恢复。不会修改滚动事件。 */
@@ -17,6 +20,9 @@ void cb_keyboard_finish_paste(int success);
 static inline int cb_keyboard_init(int redo_shift_z) { (void)redo_shift_z; return -1; }
 static inline void cb_keyboard_close(void) { }
 static inline void cb_keyboard_connected(int connected) { (void)connected; }
+static inline int cb_keyboard_caps_enabled(void) { return 0; }
+static inline void cb_keyboard_caps_ready(int ready) { (void)ready; }
+static inline unsigned cb_keyboard_caps_take(void) { return 0; }
 static inline unsigned cb_keyboard_scroll_lines(void) { return 0; }
 static inline int cb_keyboard_take_paste(void) { return 0; }
 static inline void cb_keyboard_finish_paste(int success) { (void)success; }
