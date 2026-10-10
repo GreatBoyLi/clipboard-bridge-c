@@ -647,6 +647,16 @@ static void wait_before_retry(void)
 
 int main(int argc, char **argv)
 {
+    /*
+     * 禁用标准输出缓冲，让连接和同步日志立即显示。
+     * _IONBF 不使用缓冲区，允许长度为 0，兼容 Mac 和 Windows。
+     * 必须在程序首次向 stdout 输出之前设置。
+     */
+    if (setvbuf(stdout, NULL, _IONBF, 0) != 0) {
+        fprintf(stderr, "Cannot configure standard output.\n");
+        return 1;
+    }
+
     if (argc == 3 && strcmp(argv[1], "--generate-key") == 0) {
         return generate_key(argv[2]) == 0 ? 0 : 1;
     }
@@ -716,8 +726,6 @@ int main(int argc, char **argv)
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
-    /* 及时显示终端日志，不等待缓冲区填满。 */
-    setvbuf(stdout, NULL, _IOLBF, 0);
 
     cb_socket listener = CB_INVALID;
     int exit_code = 0;
