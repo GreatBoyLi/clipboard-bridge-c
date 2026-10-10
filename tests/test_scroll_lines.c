@@ -11,16 +11,13 @@ static int set_mock(unsigned value,void *ctx) {
 }
 int main(void) {
  assert(cb_lines_linear(0)==1);
- assert(cb_lines_linear(.2)==1);
- assert(cb_lines_linear(.3)==1);
- assert(cb_lines_linear(.4)==1);
  assert(cb_lines_linear(.5)==1);
- assert(cb_lines_linear(.537)==1);
- assert(cb_lines_linear(.54)==2);
- assert(cb_lines_linear(.575)==2);
- assert(cb_lines_linear(.65)==3);
- assert(cb_lines_linear(.725)==4);
- assert(cb_lines_linear(.8)==5);
+ assert(cb_lines_linear(.8)==1);
+ assert(cb_lines_linear(.94)==1);
+ assert(cb_lines_linear(1.1)==2);
+ assert(cb_lines_linear(1.4)==3);
+ assert(cb_lines_linear(1.7)==4);
+ assert(cb_lines_linear(2.0)==5);
  assert(cb_lines_linear(10)==5);
  assert(cb_lines_linear(NAN)==0);
  assert(cb_lines_linear(-1)==0);
@@ -31,10 +28,10 @@ int main(void) {
  }
  cb_lines_filter f={0};
  assert(cb_lines_update(&f,.08,100)==1);
- assert(cb_lines_update(&f,.8,150)==1); /* 最多每 200ms 切换一次 */
- assert(cb_lines_update(&f,.8,300)==5);
- f=(cb_lines_filter){0};assert(cb_lines_update(&f,.56,100)==2);
- assert(cb_lines_update(&f,.54,400)==2); /* 阈值附近不切回 1 */
+ assert(cb_lines_update(&f,2.0,150)==1); /* 最多每 200ms 切换一次 */
+ assert(cb_lines_update(&f,2.0,300)==5);
+ f=(cb_lines_filter){0};assert(cb_lines_update(&f,1.0,100)==2);
+ assert(cb_lines_update(&f,.96,400)==2); /* 阈值附近不切回 1 */
  assert(cb_lines_update(&f,.08,700)==1);
  /* 实机常见慢滑速度先保持 1 行，超过扩大的范围才升档。 */
  f=(cb_lines_filter){0};
@@ -43,9 +40,10 @@ int main(void) {
  assert(cb_lines_update(&f,.299,700)==1);
  assert(cb_lines_update(&f,.32,1000)==1);
  assert(cb_lines_update(&f,.5,1300)==1);
- assert(cb_lines_update(&f,.54,1600)==1);
- assert(cb_lines_update(&f,.55,1900)==2);
- assert(cb_lines_update(&f,.8,2200)==5);
+ assert(cb_lines_update(&f,.8,1600)==1);
+ assert(cb_lines_update(&f,.97,1900)==1);
+ assert(cb_lines_update(&f,1.0,2100)==2);
+ assert(cb_lines_update(&f,2.0,2400)==5);
  cb_lines_lease lease={0};
  cb_lines_renew(&lease,5,100);
  assert(cb_lines_desired(&lease,100)==5);
