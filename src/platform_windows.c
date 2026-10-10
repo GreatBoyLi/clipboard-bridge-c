@@ -454,3 +454,17 @@ int cb_platform_random(unsigned char *out, size_t length)
 
     return status == 0 ? 0 : -1;
 }
+
+/* 锁定剪贴板期间读取引用；无法读取时不删除任何候选目录。 */
+static int cache_in_use(const char *directory) {
+    if(!ready_on_owner_thread() || open_clipboard_with_retry()!=0) return 1;
+    cb_content content={0};int result=read_files(&content),used=result<0;
+    for(unsigned i=0;i<content.file_count && !used;i++) {
+        if(!content.files[i] || cb_file_cache_contains(directory,content.files[i])) used=1;
+    }
+    cb_content_free(&content);CloseClipboard();return used;
+}
+void cb_platform_cleanup_cache(void) {
+    unsigned removed=cb_file_cache_clean(cache_in_use);
+    if(removed) printf("Removed %u expired file cache directories.\n",removed);
+}

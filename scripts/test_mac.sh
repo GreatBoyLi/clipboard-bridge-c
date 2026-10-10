@@ -56,7 +56,7 @@ clang "${flags[@]}" src/protocol.c src/content.c src/files.c src/net.c tests/tes
 clang "${flags[@]}" src/protocol.c src/content.c tests/test_content.c -o build/test_content
 ./build/test_content
 clang "${flags[@]}" -fobjc-arc -framework AppKit -framework ImageIO \
-  src/protocol.c src/content.c tests/test_image_macos.m -o build/test_image_macos
+  src/protocol.c src/content.c src/files.c tests/test_image_macos.m -o build/test_image_macos
 ./build/test_image_macos
 clang "${flags[@]}" src/protocol.c src/content.c src/files.c src/net.c tests/test_image_session.c -o build/test_image_session
 ./build/test_image_session

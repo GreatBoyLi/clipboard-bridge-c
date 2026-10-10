@@ -373,3 +373,128 @@ int cb_file_rx_end(cb_file_rx *rx,const unsigned char *checksums,size_t length) 
     for(unsigned i=0;i<rx->count;i++) if(get32(checksums+4*i)!=(rx->crc[i]^0xffffffffu)) return -1;
     rx->verified=1;return 0;
 }
+
+/* 缓存维护只识别本程序生成的随机目录名，避免误删同前缀的普通目录。 */
+static int cache_name_valid(const char *name) {
+    const char *prefix="clipboard-bridge-";size_t n=strlen(prefix);
+    if(strncmp(name,prefix,n)) return 0;
+    const char *suffix=name+n;size_t length=strlen(suffix);
+    if(length!=6 && length!=24) return 0;
+    for(size_t i=0;i<length;i++) {
+        unsigned char c=(unsigned char)suffix[i];
+        if(length==24 ? !isxdigit(c) : !((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9'))) return 0;
+    }return 1;
+}
+/* 枚举不跟随目录链接；回调失败时停止，调用方保留无法安全处理的目录。 */
+typedef int (*cache_visitor)(const char *,const char *,void *);
+static int cache_walk(const char *path,cache_visitor visit,void *context) {
+#ifdef _WIN32
+    char *pattern=join_path(path,"*");if(!pattern) return -1;
+    wchar_t *wide=wide_path(pattern);free(pattern);if(!wide) return -1;
+    WIN32_FIND_DATAW data={0};HANDLE find=FindFirstFileW(wide,&data);free(wide);
+    if(find==INVALID_HANDLE_VALUE) return GetLastError()==ERROR_FILE_NOT_FOUND?0:-1;
+    int result=0;
+    do {
+        if(!wcscmp(data.cFileName,L".") || !wcscmp(data.cFileName,L"..")) continue;
+        int n=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,data.cFileName,-1,NULL,0,NULL,NULL);
+        char *name=n>0?malloc((size_t)n):NULL;
+        if(!name || !WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,data.cFileName,-1,name,n,NULL,NULL)) {
+            free(name);result=-1;break;
+        }
+        char *child=join_path(path,name);result=child?visit(child,name,context):-1;
+        free(child);free(name);if(result) break;
+    } while(FindNextFileW(find,&data));
+    if(!result && GetLastError()!=ERROR_NO_MORE_FILES) result=-1;
+    FindClose(find);return result;
+#else
+    int fd=open(path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(fd<0) return -1;
+    DIR *dir=fdopendir(fd);if(!dir) {close(fd);return -1;}
+    int result=0;
+    for(;;) {
+        errno=0;struct dirent *entry=readdir(dir);if(!entry) {if(errno) result=-1;break;}
+        if(!strcmp(entry->d_name,".") || !strcmp(entry->d_name,"..")) continue;
+        char *child=join_path(path,entry->d_name);
+        result=child?visit(child,entry->d_name,context):-1;free(child);if(result) break;
+    }
+    closedir(dir);return result;
+#endif
+}
+#ifdef _WIN32
+/* 解析 junction、大小写和扩展路径前缀，以实际路径判断剪贴板引用。 */
+static wchar_t *cache_real_path(const char *path) {
+    wchar_t *wide=wide_path(path);if(!wide) return NULL;
+    HANDLE h=CreateFileW(wide,FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+        NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,NULL);free(wide);
+    if(h==INVALID_HANDLE_VALUE) return NULL;
+    DWORD n=GetFinalPathNameByHandleW(h,NULL,0,FILE_NAME_NORMALIZED);
+    wchar_t *out=n?malloc(((size_t)n+1)*sizeof(*out)):NULL;
+    DWORD used=out?GetFinalPathNameByHandleW(h,out,n+1,FILE_NAME_NORMALIZED):0;
+    CloseHandle(h);if(!used || used>n) {free(out);return NULL;}return out;
+}
+#endif
+int cb_file_cache_contains(const char *directory,const char *path) {
+#ifdef _WIN32
+    wchar_t *root=cache_real_path(directory),*reference=cache_real_path(path);
+    int result=1;
+    if(root && reference) {
+        size_t n=wcslen(root),m=wcslen(reference);
+        result=m>=n && CompareStringOrdinal(root,(int)n,reference,(int)n,TRUE)==CSTR_EQUAL &&
+            (reference[n]==0 || reference[n]==L'\\');
+    }
+#else
+    char *root=realpath(directory,NULL),*reference=realpath(path,NULL);
+    int result=1;
+    if(root && reference) {
+        size_t n=strlen(root);
+        result=!strncmp(root,reference,n) && (reference[n]==0 || reference[n]=='/');
+    }
+#endif
+    free(root);free(reference);return result;
+}
+/* 先检查整棵树，再删除；符号链接、重解析点或读取失败均保留缓存。 */
+typedef struct {unsigned depth;int deleting;} cache_tree;
+static int cache_tree_visit(const char *path,const char *name,void *context) {
+    (void)name;cache_tree *tree=context;uint64_t size=0,stamp=0;
+    int kind=path_kind(path,&size,&stamp);if(!kind || tree->depth>CB_FILE_DEPTH+1) return -1;
+    if(kind==2) {
+        cache_tree child={tree->depth+1,tree->deleting};
+        if(cache_walk(path,cache_tree_visit,&child)!=0) return -1;
+    }
+    if(tree->deleting) {
+        delete_path(path,kind==2);
+        if(path_kind(path,&size,&stamp)) return -1;
+    }return 0;
+}
+typedef struct {time_t now;int (*in_use)(const char *);unsigned removed;} cache_scan;
+static int cache_candidate(const char *path,const char *name,void *context) {
+    cache_scan *scan=context;if(!cache_name_valid(name)) return 0;
+    uint64_t size=0,stamp=0;if(path_kind(path,&size,&stamp)!=2) return 0;
+#ifdef _WIN32
+    if(stamp<UINT64_C(116444736000000000)) return 0;
+    uint64_t modified=(stamp-UINT64_C(116444736000000000))/10000000;
+#else
+    uint64_t modified=stamp/1000000000;
+#endif
+    if(scan->now<0 || modified>(uint64_t)scan->now || (uint64_t)scan->now-modified<86400) return 0;
+    cache_tree tree={0,0};
+    if(cache_tree_visit(path,name,&tree)!=0 || scan->in_use(path)!=0) return 0;
+    tree.deleting=1;if(cache_tree_visit(path,name,&tree)==0) scan->removed++;
+    return 0;
+}
+unsigned cb_file_cache_clean_at(const char *base,time_t now,int (*in_use)(const char *)) {
+    if(!base || !in_use) return 0;
+    cache_scan scan={now,in_use,0};(void)cache_walk(base,cache_candidate,&scan);return scan.removed;
+}
+unsigned cb_file_cache_clean(int (*in_use)(const char *)) {
+#ifdef _WIN32
+    wchar_t temp[MAX_PATH+1];DWORD n=GetTempPathW(MAX_PATH+1,temp);
+    if(!n || n>MAX_PATH) return 0;
+    int bytes=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,temp,-1,NULL,0,NULL,NULL);
+    char *base=bytes>0?malloc((size_t)bytes):NULL;if(!base) return 0;
+    if(!WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,temp,-1,base,bytes,NULL,NULL)) {free(base);return 0;}
+    unsigned removed=cb_file_cache_clean_at(base,time(NULL),in_use);free(base);return removed;
+#else
+    const char *base=getenv("TMPDIR");if(!base || !*base) base="/tmp";
+    return cb_file_cache_clean_at(base,time(NULL),in_use);
+#endif
+}

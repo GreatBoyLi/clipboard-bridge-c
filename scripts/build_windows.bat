@@ -45,6 +45,13 @@ cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
 
 if errorlevel 1 goto failed
 
+REM Cache cleanup uses an isolated temporary directory, never real caches.
+cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /D_CRT_SECURE_NO_WARNINGS /D_WIN32_WINNT=0x0601 /I..\src ^
+  ..\src\protocol.c ..\tests\test_cache.c /Fe:test_cache.exe /link bcrypt.lib
+if errorlevel 1 goto failed
+test_cache.exe
+if errorlevel 1 goto failed
+
 REM File stream roundtrip uses a private test directory; no clipboard access.
 cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /D_CRT_SECURE_NO_WARNINGS /I..\src ^
   ..\src\protocol.c ..\src\files.c ..\tests\test_files.c ^
@@ -63,7 +70,7 @@ if errorlevel 1 goto failed
 
 REM Native CF_HDROP conversion only; never opens the system clipboard.
 cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /D_CRT_SECURE_NO_WARNINGS /I..\src ^
-  ..\src\protocol.c ..\src\content.c ..\src\image_windows.c ..\tests\test_files_windows.c ^
+  ..\src\protocol.c ..\src\content.c ..\src\files.c ..\src\image_windows.c ..\tests\test_files_windows.c ^
   /Fe:test_files_windows.exe /link user32.lib bcrypt.lib ole32.lib windowscodecs.lib gdi32.lib shell32.lib
 if errorlevel 1 goto failed
 test_files_windows.exe

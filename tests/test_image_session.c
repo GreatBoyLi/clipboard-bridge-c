@@ -94,3 +94,5 @@ int main(void) {
 int cb_keyboard_caps_enabled(void) {return 0;}
 void cb_keyboard_caps_ready(int ready) {(void)ready;}
 unsigned cb_keyboard_caps_take(void) {return 0;}
+
+void cb_platform_cleanup_cache(void) {}

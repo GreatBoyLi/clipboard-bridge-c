@@ -11,7 +11,7 @@ clang "${flags[@]}" src/protocol.c src/files.c tests/test_files.c -o build/test_
 clang "${flags[@]}" src/protocol.c src/content.c src/files.c src/net.c tests/test_files_session.c -o build/test_files_session
 ./build/test_files_session
 clang "${flags[@]}" -fobjc-arc -framework AppKit -framework ImageIO \
- src/protocol.c src/content.c tests/test_files_macos.m -o build/test_files_macos
+ src/protocol.c src/content.c src/files.c tests/test_files_macos.m -o build/test_files_macos
 ./build/test_files_macos
 clang "${flags[@]}" src/protocol.c tests/test_protocol.c -o build/test_protocol
 ./build/test_protocol
@@ -19,5 +19,5 @@ clang "${flags[@]}" src/protocol.c src/content.c tests/test_content.c -o build/t
 ./build/test_content
 # 同一剪贴板接口有修改，仅检查已有文字/图片写入保持正常。
 clang "${flags[@]}" -fobjc-arc -framework AppKit -framework ImageIO \
- src/protocol.c src/content.c tests/test_image_macos.m -o build/test_image_macos
+ src/protocol.c src/content.c src/files.c tests/test_image_macos.m -o build/test_image_macos
 ./build/test_image_macos

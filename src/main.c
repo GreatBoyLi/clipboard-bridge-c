@@ -440,6 +440,13 @@ static uint32_t next_sequence(uint32_t sequence)
     return sequence == 0 ? 1 : sequence;
 }
 
+/* 启动及每小时空闲时维护缓存；传输期间不扫描，避免删除源文件。 */
+static void cache_tick(void) {
+    static uint64_t next_cleanup=0;
+    uint64_t now=cb_net_now();if(now<next_cleanup) return;
+    cb_platform_cleanup_cache();next_cleanup=cb_net_now()+UINT64_C(3600000);
+}
+
 /*
  * 运行一个已经认证的连接。
  *
@@ -500,6 +507,7 @@ static void run_session(cb_socket connection)
 
     while (!stop_requested) {
         uint64_t now = cb_net_now();
+        if(!file_rx.directory && !files_sending && !queued_files.files && !pending_ack) cache_tick();
 
         if (now - last_received >= PEER_TIMEOUT_MS) {
             fprintf(stderr, "Peer connection timed out.\n");
@@ -1058,6 +1066,7 @@ int main(int argc, char **argv)
     }
 
     while (!stop_requested) {
+        cache_tick();
         cb_socket connection = CB_INVALID;
 
         if (listener_mode) {

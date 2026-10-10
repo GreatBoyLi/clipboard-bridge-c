@@ -113,3 +113,5 @@ int main(void) {
     unlink(first);unlink(empty);unlink(nested_file);rmdir(nested_empty);rmdir(selected_folder);assert(rmdir(root)==0);
     puts("Bidirectional files, paste ACK, interruption and integrity rejection tests passed");
 }
+
+void cb_platform_cleanup_cache(void) {}

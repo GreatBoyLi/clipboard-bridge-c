@@ -59,3 +59,5 @@ int cb_platform_set_content(const cb_content *c) {return cb_platform_set(c->text
 int cb_keyboard_caps_enabled(void) {return 0;}
 void cb_keyboard_caps_ready(int ready) {(void)ready;}
 unsigned cb_keyboard_caps_take(void) {return 0;}
+
+void cb_platform_cleanup_cache(void) {}

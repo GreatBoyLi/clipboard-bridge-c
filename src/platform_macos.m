@@ -227,3 +227,23 @@ int cb_platform_random(unsigned char *out, size_t length)
 
     return 0;
 }
+
+/* 不修改剪贴板基线；读取失败或读取期间变化时保守保留缓存。 */
+static int cache_in_use(const char *directory) {
+    @autoreleasepool {
+        if(!ready_on_main_thread()) return 1;
+        NSInteger version=pasteboard.changeCount;
+        NSArray<NSURL *> *urls=[pasteboard readObjectsForClasses:@[[NSURL class]]
+            options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}];
+        if(!urls && [pasteboard availableTypeFromArray:@[NSPasteboardTypeFileURL,@"NSFilenamesPboardType"]]) return 1;
+        for(NSURL *url in urls) {
+            const char *path=url.path.UTF8String;
+            if(!path || cb_file_cache_contains(directory,path)) return 1;
+        }
+        return pasteboard.changeCount!=version;
+    }
+}
+void cb_platform_cleanup_cache(void) {
+    unsigned removed=cb_file_cache_clean(cache_in_use);
+    if(removed) printf("Removed %u expired file cache directories.\n",removed);
+}

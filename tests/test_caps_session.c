@@ -58,3 +58,5 @@ int main(void) {
  }
  puts("Caps session readiness, independent sequence and failure-result tests passed");
 }
+
+void cb_platform_cleanup_cache(void) {}

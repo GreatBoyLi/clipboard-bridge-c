@@ -1,5 +1,6 @@
 #ifndef CB_FILES_H
 #define CB_FILES_H
+#include <time.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -42,4 +43,10 @@ int cb_file_rx_chunk(cb_file_rx *rx,const unsigned char *block,size_t length);
 int cb_file_rx_end(cb_file_rx *rx,const unsigned char *checksums,size_t length);
 /* 未发布则删除文件和目录；已发布保留磁盘文件供之后粘贴。 */
 void cb_file_rx_close(cb_file_rx *rx);
+/* 每次清理前查询当前剪贴板；回调非零（含读取失败）表示保留。 */
+int cb_file_cache_contains(const char *directory,const char *path);
+unsigned cb_file_cache_clean(int (*in_use)(const char *));
+/* 显式目录/时间入口，便于只针对独立目录进行维护和测试。 */
+unsigned cb_file_cache_clean_at(const char *base,time_t now,int (*in_use)(const char *));
+
 #endif

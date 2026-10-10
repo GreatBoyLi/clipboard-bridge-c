@@ -15,6 +15,9 @@
  */
 int cb_platform_init(void);
 
+/* 清理超过 24 小时且当前剪贴板未引用的文件缓存。 */
+void cb_platform_cleanup_cache(void);
+
 /* 释放平台相关资源。 */
 void cb_platform_close(void);
 
