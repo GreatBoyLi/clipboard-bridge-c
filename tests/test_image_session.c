@@ -29,12 +29,12 @@ int cb_platform_poll_content(cb_content *c) {
     memset(c,0,sizeof(*c));if(emitted) return 0;emitted=1;
     c->text=malloc(CB_MAX_TEXT+1);assert(c->text);
     memset(c->text,'a',CB_MAX_TEXT);c->text[CB_MAX_TEXT]=0;c->text_length=CB_MAX_TEXT;
-    c->png=malloc(sizeof(png));assert(c->png);memcpy(c->png,png,sizeof(png));c->png_length=sizeof(png);
+    c->png=malloc(sizeof(cb_test_png));assert(c->png);memcpy(c->png,cb_test_png,sizeof(cb_test_png));c->png_length=sizeof(cb_test_png);
     return 1;
 }
 int cb_platform_set_content(const cb_content *c) {
-    assert(c->text_length==CB_MAX_TEXT && c->png_length==sizeof(png));
-    assert(!memcmp(c->png,png,sizeof(png)) && c->text[0]=='a' && c->text[CB_MAX_TEXT-1]=='a');
+    assert(c->text_length==CB_MAX_TEXT && c->png_length==sizeof(cb_test_png));
+    assert(!memcmp(c->png,cb_test_png,sizeof(cb_test_png)) && c->text[0]=='a' && c->text[CB_MAX_TEXT-1]=='a');
     ++applied;return 0;
 }
 int cb_platform_poll(char **p,size_t *n) {(void)p;(void)n;assert(0);return 0;}
@@ -65,7 +65,7 @@ int main(void) {
             close(sockets[1]);_exit(0);
         }
         close(sockets[1]);
-        cb_content image={NULL,0,(unsigned char *)png,sizeof(png)};
+        cb_content image={NULL,0,(unsigned char *)cb_test_png,sizeof(cb_test_png)};
         unsigned char *body=NULL;size_t length=0;
         assert(cb_content_pack(&image,&body,&length)==0);
         if(mode==2) {body[8]=2;} // PNG 声明长度远超 20 MiB。
@@ -77,7 +77,7 @@ int main(void) {
             } else if(mode==1) {
                 assert(send_frame(sockets[0],CB_IMAGE_CHUNK,2,body+12,(uint32_t)(length-12))==0);
             } else if(mode==3) {
-                unsigned char extra[sizeof(png)+1];memcpy(extra,png,sizeof(png));extra[sizeof(png)]=0;
+                unsigned char extra[sizeof(cb_test_png)+1];memcpy(extra,cb_test_png,sizeof(cb_test_png));extra[sizeof(cb_test_png)]=0;
                 assert(send_frame(sockets[0],CB_IMAGE_CHUNK,1,extra,sizeof(extra))==0);
             } else if(mode==5) {
                 assert(send_frame(sockets[0],CB_TEXT,2,"new",3)==0); // 不能在半张图片内插入新复制。

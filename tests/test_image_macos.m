@@ -16,7 +16,7 @@ int main(void) { @autoreleasepool {
     /* 独立测试剪贴板，绝不清空用户的通用剪贴板。 */
     pasteboard=[NSPasteboard pasteboardWithUniqueName];
     last_change_count=pasteboard.changeCount;
-    cb_content input={"图片🙂",10,(unsigned char *)png,sizeof(png)}, output={0};
+    cb_content input={"图片🙂",10,(unsigned char *)cb_test_png,sizeof(cb_test_png)}, output={0};
     assert(cb_platform_set_content(&input)==0);
     assert([pasteboard stringForType:NSPasteboardTypeString]!=nil);
     assert([pasteboard dataForType:NSPasteboardTypePNG]!=nil);
@@ -24,10 +24,10 @@ int main(void) { @autoreleasepool {
     assert(cb_platform_poll_content(&output)==0); // 自写不能回传。
     last_change_count--;
     assert(cb_platform_poll_content(&output)==1);
-    assert(output.text_length==10 && output.png_length==sizeof(png));
+    assert(output.text_length==10 && output.png_length==sizeof(cb_test_png));
     cb_content_free(&output);
     input.png_length=20;assert(cb_platform_set_content(&input)==-1);
-    assert([pasteboard dataForType:NSPasteboardTypePNG].length==sizeof(png));
+    assert([pasteboard dataForType:NSPasteboardTypePNG].length==sizeof(cb_test_png));
     NSData *tiff=[pasteboard dataForType:NSPasteboardTypeTIFF];
     NSPasteboardItem *item=[[NSPasteboardItem alloc] init];
     [item setData:tiff forType:NSPasteboardTypeTIFF];

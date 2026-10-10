@@ -10,7 +10,7 @@ int main(void)
     UINT width=0,height=0;
     HGLOBAL png_handle=NULL,dib_handle=NULL;
     assert(cb_windows_image_init()==0);
-    assert(decode_png(png,sizeof(png),&pixels,&width,&height)==0);
+    assert(decode_png(cb_test_png,sizeof(cb_test_png),&pixels,&width,&height)==0);
     assert(width==1 && height==1 && !pixels[0] && !pixels[1] && !pixels[2] && !pixels[3]);
     free(pixels);
     /* 非透明像素及半透明像素必须无损往返，不能丢失 alpha。 */
