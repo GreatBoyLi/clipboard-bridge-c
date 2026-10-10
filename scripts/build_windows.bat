@@ -1,10 +1,10 @@
 @echo off
 setlocal
 
-REM 根据脚本位置进入项目根目录。
+REM Locate the project from this script, regardless of the current directory.
 cd /d "%~dp0.."
 
-REM 必须在 Visual Studio 的 x64 开发者命令提示符中执行。
+REM Use the Visual Studio x64 Native Tools Command Prompt.
 where cl >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] MSVC compiler not found.
@@ -18,15 +18,15 @@ if not exist build (
     exit /b 1
 )
 
-REM 把目标文件和程序统一放到 build 目录。
+REM Place all objects and executables in the build directory.
 pushd build
 if errorlevel 1 exit /b 1
 
-REM /std:c11：使用 C11。
-REM /utf-8：源文件及执行字符集使用 UTF-8。
-REM /W4 /WX：开启严格警告，警告视为错误。
-REM /MT：静态链接 MSVC 运行库，减少额外运行库依赖。
-REM Windows 使用本地原生接口，不编译 Mac 的 .m 文件。
+REM /std:c11: compile C11 sources.
+REM /utf-8: interpret C source and execution strings as UTF-8.
+REM /W4 /WX: treat compiler warnings as errors.
+REM /MT: use the static MSVC runtime.
+REM Compile native Windows C sources; do not compile macOS .m files.
 cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
   /D_CRT_SECURE_NO_WARNINGS ^
   /D_WIN32_WINNT=0x0601 ^
@@ -41,7 +41,7 @@ cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
 
 if errorlevel 1 goto failed
 
-REM 编译协议测试。
+REM Build protocol tests.
 cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
   /D_CRT_SECURE_NO_WARNINGS ^
   /I..\src ^
@@ -51,7 +51,7 @@ cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
 
 if errorlevel 1 goto failed
 
-REM 编译网络测试。
+REM Build network tests.
 cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
   /D_CRT_SECURE_NO_WARNINGS ^
   /D_WIN32_WINNT=0x0601 ^
@@ -63,14 +63,14 @@ cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
 
 if errorlevel 1 goto failed
 
-REM 行数映射与恢复租约测试，不访问系统设置。
+REM Test line mapping and recovery without changing system settings.
 cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
   /I..\src ..\tests\test_scroll_lines.c /Fe:test_scroll_lines.exe
 if errorlevel 1 goto failed
 test_scroll_lines.exe
 if errorlevel 1 goto failed
 
-REM 编译完成后执行不访问系统剪贴板的测试。
+REM Run tests that do not access the real clipboard.
 test_protocol.exe
 if errorlevel 1 goto failed
 
@@ -85,4 +85,6 @@ exit /b 0
 :failed
 popd
 echo [ERROR] Build or test failed. Check the output above.
+echo [HINT] For LNK1104 on clipboard-bridge.exe, stop the running bridge first.
+echo [HINT] Wait for its scroll guard to exit and restore settings before rebuilding.
 exit /b 1

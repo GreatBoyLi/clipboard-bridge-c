@@ -1,0 +1,2 @@
+# Keep Windows batch scripts in CRLF form on every checkout.
+*.bat text eol=crlf
