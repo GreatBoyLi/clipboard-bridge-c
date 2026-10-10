@@ -20,6 +20,7 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <shellapi.h>
+#include <shlobj.h> /* DROPFILES 的声明不在 shellapi.h 中。 */
 
 #include "platform.h"
 #include "protocol.h"
