@@ -79,6 +79,16 @@ static NSUserDefaults *menu_preferences(void) {return NSUserDefaults.standardUse
 @implementation BridgeMenu
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
+    /* 菜单栏应用也需要标准编辑菜单，⌘V 等快捷键才能沿响应链交给输入框。
+     * 不指定 target，让当前文本编辑器处理命令，也支持系统文件选择面板。 */
+    NSMenu *mainMenu=[NSMenu new];
+    NSMenuItem *editItem=[[NSMenuItem alloc] initWithTitle:@"编辑" action:NULL keyEquivalent:@""];
+    NSMenu *editMenu=[[NSMenu alloc] initWithTitle:@"编辑"];
+    [editMenu addItemWithTitle:@"剪切" action:@selector(cut:) keyEquivalent:@"x"];
+    [editMenu addItemWithTitle:@"复制" action:@selector(copy:) keyEquivalent:@"c"];
+    [editMenu addItemWithTitle:@"粘贴" action:@selector(paste:) keyEquivalent:@"v"];
+    [editMenu addItemWithTitle:@"全选" action:@selector(selectAll:) keyEquivalent:@"a"];
+    editItem.submenu=editMenu;[mainMenu addItem:editItem];NSApp.mainMenu=mainMenu;
     self.lockFD=-1;
     self.configDirectory=[NSHomeDirectory() stringByAppendingPathComponent:@".config/clipboard-bridge"];
     NSError *error=nil;
