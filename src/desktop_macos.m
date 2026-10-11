@@ -56,6 +56,8 @@ static BOOL store_pairing(NSString *path,NSData *bytes) {
     [self.settings registerDefaults:@{@"port":@"47321",@"keyboard":@YES,@"three":@YES,@"scroll":@YES,@"caps":@YES}];
     self.status=@"未连接";self.detail=@"";
     self.item=[[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
+    NSImage *logo=[[NSImage alloc] initWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"clipboard-bridge" ofType:@"png"]];
+    logo.size=NSMakeSize(18,18);self.item.button.image=logo;self.item.button.imagePosition=NSImageLeft;
     [self rebuildMenu];
     if([self.settings stringForKey:@"host"].length && [[NSFileManager defaultManager] fileExistsAtPath:[self keyPath]]) {
         [self connect:nil];
@@ -73,7 +75,8 @@ static BOOL store_pairing(NSString *path,NSData *bytes) {
     entry.target=self;entry.enabled=enabled;[self.menu addItem:entry];
 }
 - (void)rebuildMenu {
-    self.item.button.title=[self.status isEqualToString:@"已连接"]?@"CB ●":@"CB ○";
+    NSString *prefix=self.item.button.image?@"":@"CB";
+    self.item.button.title=[prefix stringByAppendingString:[self.status isEqualToString:@"已连接"]?@" ●":@" ○"];
     self.item.button.toolTip=[NSString stringWithFormat:@"Clipboard Bridge：%@",self.status];
     self.menu=[NSMenu new];self.menu.autoenablesItems=NO;
     [self add:[NSString stringWithFormat:@"状态：%@",self.status] action:NULL enabled:NO];

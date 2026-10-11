@@ -43,7 +43,8 @@ echo "Mac 程序已生成：$PROJECT_DIR/build/clipboard-bridge"
 
 # 打包原生菜单栏与原 worker；日常双击 .app 即可，不注册登录启动。
 APP="$PROJECT_DIR/build/Clipboard Bridge.app"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp assets/clipboard-bridge.icns assets/clipboard-bridge.png "$APP/Contents/Resources/"
 clang -std=c11 -mmacosx-version-min=12.0 -Wall -Wextra -Werror -O2 -fobjc-arc \
   -framework AppKit -framework ApplicationServices \
   src/desktop_macos.m -o "$APP/Contents/MacOS/ClipboardBridge"
@@ -53,6 +54,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>net.greatboyli.clipboardbridge</string>
+<key>CFBundleIconFile</key><string>clipboard-bridge.icns</string>
 <key>CFBundleName</key><string>Clipboard Bridge</string>
 <key>CFBundleDisplayName</key><string>Clipboard Bridge</string>
 <key>CFBundleExecutable</key><string>ClipboardBridge</string>
@@ -67,4 +69,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 # 有本机签名身份时可通过 CB_SIGN_IDENTITY 指定，否则使用本地 ad-hoc 签名。
 codesign --force --deep --sign "${CB_SIGN_IDENTITY:--}" "$APP"
+# 更新时间让 Finder 重新读取应用图标。
+touch "$APP"
 echo "Mac 菜单栏程序：$APP"

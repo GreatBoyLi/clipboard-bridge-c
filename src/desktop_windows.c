@@ -332,7 +332,7 @@ static void update_tray(BOOL add) {
     ZeroMemory(&icon, sizeof(icon));
     icon.cbSize = (DWORD)sizeof(icon); icon.hWnd = window; icon.uID = 1;
     icon.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    icon.uCallbackMessage = WM_TRAY; icon.hIcon = LoadIconW(NULL, IDI_APPLICATION);
+    icon.uCallbackMessage = WM_TRAY; icon.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));
     if (config.selected >= 0)
         (void)StringCchPrintfW(icon.szTip, ARRAYSIZE(icon.szTip), L"Clipboard Bridge · %.40s · %s", config.pairs[config.selected].name, status);
     else (void)StringCchPrintfW(icon.szTip, ARRAYSIZE(icon.szTip), L"Clipboard Bridge · %s", status);
@@ -662,6 +662,7 @@ int WINAPI wWinMain(HINSTANCE current, HINSTANCE previous, LPWSTR command, int s
         CloseHandle(mutex_handle); return 1;
     }
     ZeroMemory(&cls, sizeof(cls)); cls.hInstance = current; cls.lpfnWndProc = window_proc;
+    cls.hIcon = LoadIconW(current, MAKEINTRESOURCEW(1));
     cls.lpszClassName = L"ClipboardBridgeTray"; cls.hCursor = LoadCursorW(NULL, IDC_ARROW);
     if (!RegisterClassW(&cls)) { CloseHandle(mutex_handle); return 1; }
     taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");

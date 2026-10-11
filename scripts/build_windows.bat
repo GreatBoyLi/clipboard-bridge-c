@@ -45,10 +45,14 @@ cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
 
 if errorlevel 1 goto failed
 
+REM Compile the application/tray icon resource with the Windows SDK.
+rc /nologo /fo clipboard-bridge-icon.res ..\assets\desktop.rc
+if errorlevel 1 goto failed
+
 REM Native tray supervises the existing worker; keep both executables together.
 cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /D_CRT_SECURE_NO_WARNINGS /D_WIN32_WINNT=0x0601 /I..\src ^
   ..\src\desktop_windows.c /Fe:clipboard-bridge-tray.exe ^
-  /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib comdlg32.lib bcrypt.lib advapi32.lib
+  /link /SUBSYSTEM:WINDOWS clipboard-bridge-icon.res user32.lib shell32.lib comdlg32.lib bcrypt.lib advapi32.lib
 if errorlevel 1 goto failed
 
 REM Desktop credential validation and private stdin control pipe tests.
