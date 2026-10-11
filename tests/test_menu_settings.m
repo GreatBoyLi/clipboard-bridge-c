@@ -21,7 +21,7 @@ int main(void) { @autoreleasepool {
     menu.testKey=[[NSString stringWithUTF8String:base] stringByAppendingPathComponent:@"pairing.key"];
     [menu saveHost:@"100.87.202.121" port:@"47321"];
     assert(menu.connects==0 && menu.alerts==0);
-    assert([menu.status isEqualToString:@"地址已保存，待导入密钥"]);
+    assert([menu.status isEqualToString:@"地址已保存，待生成配对密钥"]);
     NSUserDefaults *saved=[[NSUserDefaults alloc] initWithSuiteName:suite];
     assert([[saved stringForKey:@"host"] isEqualToString:@"100.87.202.121"]);
     assert([[saved stringForKey:@"port"] isEqualToString:@"47321"]);

@@ -4,6 +4,8 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
+#include <stdlib.h>
 
 /* 独立临时文件可避免上次意外退出留下 .new 导致后续导入永久失败。 */
 static BOOL store_pairing(NSString *path,NSData *bytes) {
@@ -18,6 +20,41 @@ static BOOL store_pairing(NSString *path,NSData *bytes) {
     if(ok) ok=rename(temporary,path.fileSystemRepresentation)==0;
     if(!ok && fd>=0) unlink(temporary);
     free(temporary);return ok;
+}
+
+/* 首次生成 256 位随机密钥；已有文件只校验/读取，绝不自动更换配对。
+ * 先写入 0600 临时文件，再用 link 原子创建：并发生成也不能覆盖已有密钥。 */
+static NSData *ensure_pairing(NSString *path) {
+    struct stat info;
+    if(lstat(path.fileSystemRepresentation,&info)!=0) {
+        if(errno!=ENOENT) return nil;
+        unsigned char random[32];arc4random_buf(random,sizeof(random));
+        char encoded[65];const char *hex="0123456789abcdef";
+        for(size_t i=0;i<sizeof(random);i++) {encoded[2*i]=hex[random[i]>>4];encoded[2*i+1]=hex[random[i]&15];}
+        encoded[64]='\n';
+        NSString *temporaryPath=[path stringByAppendingString:@".XXXXXX"];
+        char *temporary=strdup(temporaryPath.fileSystemRepresentation);if(!temporary) return nil;
+        int fd=mkstemp(temporary);BOOL ok=fd>=0;
+        if(ok) {
+            (void)fcntl(fd,F_SETFD,FD_CLOEXEC);
+            ok=write(fd,encoded,sizeof(encoded))==sizeof(encoded) && fsync(fd)==0;
+            if(close(fd)!=0) ok=NO;
+            if(ok && link(temporary,path.fileSystemRepresentation)!=0 && errno!=EEXIST) ok=NO;
+            unlink(temporary);
+        }
+        free(temporary);if(!ok) return nil;
+    }
+    int fd=open(path.fileSystemRepresentation,O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
+    if(fd<0) return nil;
+    char bytes[67];ssize_t count=-1;
+    if(fstat(fd,&info)==0 && S_ISREG(info.st_mode) && info.st_size>=64 && info.st_size<=66)
+        count=read(fd,bytes,sizeof(bytes));
+    close(fd);
+    if(count<64 || count>66) return nil;
+    for(int i=0;i<64;i++) if(!((bytes[i]>='0'&&bytes[i]<='9') || (bytes[i]>='a'&&bytes[i]<='f') || (bytes[i]>='A'&&bytes[i]<='F'))) return nil;
+    if(count==65 && bytes[64]!='\n') return nil;
+    if(count==66 && (bytes[64]!='\r' || bytes[65]!='\n')) return nil;
+    bytes[64]='\n';return [NSData dataWithBytes:bytes length:65];
 }
 
 /* 菜单栏只负责设置和生命周期；剪贴板和输入仍在原 worker 主线程处理。 */
@@ -61,7 +98,7 @@ static BOOL store_pairing(NSString *path,NSData *bytes) {
     [self rebuildMenu];
     if([self.settings stringForKey:@"host"].length) {
         if([[NSFileManager defaultManager] fileExistsAtPath:[self keyPath]]) [self connect:nil];
-        else {self.status=@"地址已保存，待导入密钥";[self rebuildMenu];}
+        else {self.status=@"地址已保存，待生成配对密钥";[self rebuildMenu];}
     } else [self configure:nil];
 }
 - (NSString *)keyPath {return [self.configDirectory stringByAppendingPathComponent:@"menu-pairing.key"];}
@@ -84,6 +121,7 @@ static BOOL store_pairing(NSString *path,NSData *bytes) {
     [self.menu addItem:[NSMenuItem separatorItem]];
     [self add:@"连接" action:@selector(connect:) enabled:self.worker==nil && !self.quitting];
     [self add:@"断开" action:@selector(disconnect:) enabled:self.worker!=nil && !self.quitting];
+    [self add:@"生成并导出配对密钥…" action:@selector(exportPairing:) enabled:!self.quitting];
     [self add:@"主机与配对…" action:@selector(configure:) enabled:!self.quitting];
     [self.menu addItem:[NSMenuItem separatorItem]];
     NSArray *labels=@[@"键盘快捷键映射",@"Caps Lock 短按/长按",@"三指前进/后退",@"两指滚动行数控制"];
@@ -102,10 +140,32 @@ static BOOL store_pairing(NSString *path,NSData *bytes) {
 - (NSTextField *)field:(NSString *)value frame:(NSRect)frame {
     NSTextField *field=[[NSTextField alloc] initWithFrame:frame];field.stringValue=value?:@"";return field;
 }
+/* 导出已有配对供主机登记；取消导出仍保留本地密钥，之后可再次导出。 */
+- (void)exportPairing:(id)sender {
+    (void)sender;[NSApp activateIgnoringOtherApps:YES];
+    NSData *key=ensure_pairing([self keyPath]);
+    if(!key) {
+        [self alert:@"无法生成或读取密钥" message:@"请检查配置目录权限和现有密钥文件。已有密钥不会被自动替换。"] ;return;
+    }
+    NSSavePanel *panel=[NSSavePanel savePanel];
+    panel.nameFieldStringValue=@"mac-pairing.key";
+    panel.message=@"将此文件交给 Windows，在托盘「添加 Mac」时选择导入已有密钥。已有配对会导出原密钥。";
+    if([panel runModal]!=NSModalResponseOK) return;
+    NSString *destination=panel.URL.path.stringByResolvingSymlinksInPath.stringByStandardizingPath;
+    NSString *directory=self.configDirectory.stringByResolvingSymlinksInPath.stringByStandardizingPath;
+    if([destination isEqualToString:directory] || [destination hasPrefix:[directory stringByAppendingString:@"/"]]) {
+        [self alert:@"请选择其他导出位置" message:@"请保存到桌面等目录，避免覆盖程序内部配置。"] ;return;
+    }
+    if(!store_pairing(panel.URL.path,key)) {
+        [self alert:@"导出失败" message:@"本地密钥已保留，请选择有写入权限的目录重试。"] ;return;
+    }
+    [self alert:@"配对密钥已导出" message:@"在 Windows 托盘选择「添加 Mac」，填写本 Mac 的名称，选择导入已有密钥并打开此文件，再选中本 Mac。然后在本 Mac 菜单点击「连接」。"];
+    if(!self.worker) {self.status=@"密钥已就绪，待连接";[self rebuildMenu];}
+}
 - (void)configure:(id)sender {
     (void)sender;[NSApp activateIgnoringOtherApps:YES];NSAlert *alert=[NSAlert new];
     alert.messageText=@"连接 Windows 主机";
-    alert.informativeText=@"填写主机的 Tailscale IP 或设备域名。首次配对需要导入 Windows 托盘为这台 Mac 导出的密钥。";
+    alert.informativeText=@"填写主机的 Tailscale IP 或设备域名。首次配对请从菜单「生成并导出配对密钥」，再在 Windows 托盘「添加 Mac」时选择导入。已有密钥仍可导入。";
     [alert addButtonWithTitle:@"保存"];[alert addButtonWithTitle:@"导入配对密钥…"];[alert addButtonWithTitle:@"取消"];
     NSView *view=[[NSView alloc] initWithFrame:NSMakeRect(0,0,360,80)];
     NSTextField *host=[self field:[self.settings stringForKey:@"host"] frame:NSMakeRect(80,45,270,24)];
@@ -164,8 +224,8 @@ static BOOL store_pairing(NSString *path,NSData *bytes) {
     if(self.worker) {self.restartPending=YES;[self stopWorker];}
     else if([[NSFileManager defaultManager] fileExistsAtPath:[self keyPath]]) [self connect:nil];
     else {
-        self.status=@"地址已保存，待导入密钥";
-        self.detail=@"下一步：主机与配对 → 导入配对密钥。无需重新填写地址和端口。";
+        self.status=@"地址已保存，待生成配对密钥";
+        self.detail=@"下一步：菜单 → 生成并导出配对密钥 → Windows 添加 Mac 并导入。无需重新填写地址和端口。";
     }
     [self rebuildMenu];
 }
@@ -176,8 +236,8 @@ static BOOL store_pairing(NSString *path,NSData *bytes) {
         [self alert:@"尚未设置主机" message:@"请在「主机与配对」中保存 Windows 地址和端口。"] ;return;
     }
     if(![[NSFileManager defaultManager] fileExistsAtPath:[self keyPath]]) {
-        self.status=@"地址已保存，待导入密钥";[self rebuildMenu];
-        [self alert:@"还需导入配对密钥" message:@"主机地址和端口已经保存，不用重复填写。请打开「主机与配对」→「导入配对密钥」，选择 Windows 为这台 Mac 导出的文件。"] ;return;
+        self.status=@"地址已保存，待生成配对密钥";[self rebuildMenu];
+        [self alert:@"还需生成配对密钥" message:@"主机地址和端口已经保存，不用重复填写。请从菜单「生成并导出配对密钥」，然后在 Windows 托盘添加本 Mac 并导入该文件。"] ;return;
     }
     NSString *executable=[NSBundle.mainBundle pathForAuxiliaryExecutable:@"clipboard-bridge"];
     if(!executable) {[self alert:@"同步程序缺失" message:@"请重新编译或完整复制 Clipboard Bridge.app。"] ;return;}
