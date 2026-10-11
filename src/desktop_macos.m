@@ -59,11 +59,10 @@ static BOOL store_pairing(NSString *path,NSData *bytes) {
     NSImage *logo=[[NSImage alloc] initWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"clipboard-bridge" ofType:@"png"]];
     logo.size=NSMakeSize(18,18);self.item.button.image=logo;self.item.button.imagePosition=NSImageLeft;
     [self rebuildMenu];
-    if([self.settings stringForKey:@"host"].length && [[NSFileManager defaultManager] fileExistsAtPath:[self keyPath]]) {
-        [self connect:nil];
-    } else {
-        [self configure:nil];
-    }
+    if([self.settings stringForKey:@"host"].length) {
+        if([[NSFileManager defaultManager] fileExistsAtPath:[self keyPath]]) [self connect:nil];
+        else {self.status=@"地址已保存，待导入密钥";[self rebuildMenu];}
+    } else [self configure:nil];
 }
 - (NSString *)keyPath {return [self.configDirectory stringByAppendingPathComponent:@"menu-pairing.key"];}
 - (void)alert:(NSString *)title message:(NSString *)message {
@@ -115,6 +114,7 @@ static BOOL store_pairing(NSString *path,NSData *bytes) {
     NSTextField *portLabel=[NSTextField labelWithString:@"端口"];portLabel.frame=NSMakeRect(0,10,75,24);
     [view addSubview:hostLabel];[view addSubview:portLabel];[view addSubview:host];[view addSubview:port];alert.accessoryView=view;
     NSModalResponse result=[alert runModal];if(result==NSAlertThirdButtonReturn) return;
+    [alert.window makeFirstResponder:nil]; // 提交仍在编辑的地址/端口字段。
     NSString *address=[host.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     NSString *number=port.stringValue;
     NSCharacterSet *badPort=[[NSCharacterSet characterSetWithCharactersInString:@"0123456789"] invertedSet];
@@ -149,16 +149,35 @@ static BOOL store_pairing(NSString *path,NSData *bytes) {
             [self alert:@"无法保存配对密钥" message:@"请检查配置目录权限；现有密钥未替换。"] ;return;
         }
     }
-    [self.settings setObject:address forKey:@"host"];[self.settings setObject:number forKey:@"port"];
-    [self rebuildMenu];
+    [self saveHost:address port:number];
+}
+/* 保存连接信息与导入密钥是两个独立步骤；未配对时不把保存当作连接失败。 */
+- (void)saveHost:(NSString *)host port:(NSString *)port {
+    NSString *previousHost=[self.settings stringForKey:@"host"];
+    NSString *previousPort=[self.settings stringForKey:@"port"];
+    [self.settings setObject:host forKey:@"host"];[self.settings setObject:port forKey:@"port"];
+    if(![self.settings synchronize]) {
+        if(previousHost) [self.settings setObject:previousHost forKey:@"host"];else [self.settings removeObjectForKey:@"host"];
+        if(previousPort) [self.settings setObject:previousPort forKey:@"port"];else [self.settings removeObjectForKey:@"port"];
+        [self alert:@"配置保存失败" message:@"主机地址和端口未保存，请检查用户配置目录权限。"] ;return;
+    }
     if(self.worker) {self.restartPending=YES;[self stopWorker];}
-    else [self connect:nil];
+    else if([[NSFileManager defaultManager] fileExistsAtPath:[self keyPath]]) [self connect:nil];
+    else {
+        self.status=@"地址已保存，待导入密钥";
+        self.detail=@"下一步：主机与配对 → 导入配对密钥。无需重新填写地址和端口。";
+    }
+    [self rebuildMenu];
 }
 - (void)connect:(id)sender {
     (void)sender;if(self.worker || self.quitting) return;
     NSString *host=[self.settings stringForKey:@"host"];
-    if(!host.length || ![[NSFileManager defaultManager] fileExistsAtPath:[self keyPath]]) {
-        [self alert:@"尚未完成配对" message:@"请打开「主机与配对」，填写地址并导入配对密钥。"] ;return;
+    if(!host.length) {
+        [self alert:@"尚未设置主机" message:@"请在「主机与配对」中保存 Windows 地址和端口。"] ;return;
+    }
+    if(![[NSFileManager defaultManager] fileExistsAtPath:[self keyPath]]) {
+        self.status=@"地址已保存，待导入密钥";[self rebuildMenu];
+        [self alert:@"还需导入配对密钥" message:@"主机地址和端口已经保存，不用重复填写。请打开「主机与配对」→「导入配对密钥」，选择 Windows 为这台 Mac 导出的文件。"] ;return;
     }
     NSString *executable=[NSBundle.mainBundle pathForAuxiliaryExecutable:@"clipboard-bridge"];
     if(!executable) {[self alert:@"同步程序缺失" message:@"请重新编译或完整复制 Clipboard Bridge.app。"] ;return;}

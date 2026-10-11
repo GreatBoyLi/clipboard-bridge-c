@@ -15,3 +15,7 @@ python3 tests/test_desktop_worker.py build/test_desktop_worker
 clang "${flags[@]}" -fobjc-arc -framework AppKit -framework ApplicationServices \
   tests/test_desktop_key_macos.m -o build/test_desktop_key_macos
 ./build/test_desktop_key_macos
+
+clang "${flags[@]}" -fobjc-arc -framework AppKit -framework ApplicationServices \
+  tests/test_menu_settings.m -o build/test_menu_settings
+./build/test_menu_settings
