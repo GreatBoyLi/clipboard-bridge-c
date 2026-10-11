@@ -129,20 +129,26 @@ int cb_scroll_set(unsigned lines) {
     InterlockedIncrement(&shared->pulse);
     return 0;
 }
-void cb_scroll_close(void) {
+static int finish_scroll(DWORD timeout) {
+    int ok=1;
     if(stop_event) SetEvent(stop_event);
     if(guard) {
         /* 不强杀守护进程：设置广播可能正在等待应用，它仍负责最终恢复。 */
-        if(WaitForSingleObject(guard,3000)!=WAIT_OBJECT_0)
-            fprintf(stderr,"Scroll guard is still restoring; it will exit independently.\n");
+        if(WaitForSingleObject(guard,timeout)!=WAIT_OBJECT_0) {
+            ok=0;fprintf(stderr,"Scroll guard is still restoring; it will exit independently.\n");
+        }
         else {
             DWORD result=1;
-            if(!GetExitCodeProcess(guard,&result) || result)
-                fprintf(stderr,"Scroll setting guard failed; check Windows mouse settings.\n");
+            if(!GetExitCodeProcess(guard,&result) || result) {
+                ok=0;fprintf(stderr,"Scroll setting guard failed; check Windows mouse settings.\n");
+            }
         }
         CloseHandle(guard);guard=NULL;
     }
     if(shared) {UnmapViewOfFile(shared);shared=NULL;}
     if(mapping) {CloseHandle(mapping);mapping=NULL;}
     if(stop_event) {CloseHandle(stop_event);stop_event=NULL;}
+    return ok?0:-1;
 }
+void cb_scroll_close(void) {(void)finish_scroll(3000);}
+int cb_scroll_close_wait(void) {return finish_scroll(INFINITE);}

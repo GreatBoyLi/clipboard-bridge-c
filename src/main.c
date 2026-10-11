@@ -26,6 +26,7 @@
 #include "protocol.h"
 #include "content.h"
 #include "files.h"
+#include "desktop_control.h"
 #include "caps_action.h"
 #ifdef _WIN32
 #include "caps_remote.h"
@@ -72,6 +73,12 @@
  */
 static volatile sig_atomic_t stop_requested = 0;
 static int scroll_enabled;
+static int desktop_control;
+static int should_stop(void) {
+    if(desktop_control && cb_desktop_stop_requested()) stop_requested=1;
+    return stop_requested!=0;
+}
+
 
 static void handle_signal(int signal_number)
 {
@@ -155,16 +162,19 @@ static int generate_key(const char *path)
     output[CB_KEY_SIZE] = '\n';
 
 #ifdef _WIN32
-    int file = _open(
-        path,
-        _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY,
-        _S_IREAD | _S_IWRITE
-    );
+    int count=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path,-1,NULL,0);
+    wchar_t *native_path=count>0?malloc((size_t)count*sizeof(*native_path)):NULL;
+    int file=-1;
+    if(native_path && MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path,-1,native_path,count))
+        file=_wopen(native_path,_O_WRONLY|_O_CREAT|_O_EXCL|_O_BINARY,_S_IREAD|_S_IWRITE);
 #else
     int file = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
 #endif
 
     if (file < 0) {
+#ifdef _WIN32
+        free(native_path);
+#endif
         fprintf(stderr,
             "Cannot create key file; check the path or existing file.\n");
         return -1;
@@ -206,11 +216,18 @@ static int generate_key(const char *path)
 
     if (!success) {
         /* 不留下可能被误认为有效密钥的半成品。 */
+#ifdef _WIN32
+        _wremove(native_path);free(native_path);
+#else
         remove(path);
+#endif
         fprintf(stderr, "Key file write failed.\n");
         return -1;
     }
 
+#ifdef _WIN32
+    free(native_path);
+#endif
     puts("Pairing key file created. Do not commit or share it publicly.");
     return 0;
 }
@@ -227,7 +244,15 @@ static int generate_key(const char *path)
  */
 static int load_key(const char *path, char key[CB_KEY_SIZE])
 {
+#ifdef _WIN32
+    int count=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path,-1,NULL,0);
+    wchar_t *wide=count>0?malloc((size_t)count*sizeof(*wide)):NULL;
+    FILE *file=NULL;
+    if(wide && MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path,-1,wide,count)) file=_wfopen(wide,L"rb");
+    free(wide);
+#else
     FILE *file = fopen(path, "rb");
+#endif
 
     if (file == NULL) {
         fprintf(stderr, "Cannot open pairing key file.\n");
@@ -505,7 +530,7 @@ static void run_session(cb_socket connection)
     if(scroll_enabled && send_frame(connection,CB_SCROLL_CAPS,0,NULL,0)!=0) goto session_done;
     puts("Connected and authenticated. Clipboard synchronization active.");
 
-    while (!stop_requested) {
+    while (!should_stop()) {
         uint64_t now = cb_net_now();
         if(!file_rx.directory && !files_sending && !queued_files.files && !pending_ack) cache_tick();
 
@@ -535,6 +560,7 @@ static void run_session(cb_socket connection)
             break;
         }
 
+        if(should_stop()) break;
         if (ready == 1) {
             cb_header header;
             unsigned char *data = NULL;
@@ -543,6 +569,7 @@ static void run_session(cb_socket connection)
                 break;
             }
 
+            if(should_stop()) {free(data);break;}
             int valid = 1;
 
             switch (header.type) {
@@ -927,14 +954,44 @@ session_done:
 static void wait_before_retry(void)
 {
     for (unsigned elapsed = 0;
-         elapsed < RECONNECT_MS && !stop_requested;
+         elapsed < RECONNECT_MS && !should_stop();
          elapsed += POLL_MS) {
         cb_net_sleep(POLL_MS);
     }
 }
 
+#ifdef _WIN32
+#include <shellapi.h>
+static char **desktop_argv;
+static int desktop_argc;
+static void free_desktop_argv(void) {
+    for(int i=0;i<desktop_argc;i++) free(desktop_argv[i]);
+    free(desktop_argv);
+}
+static int unicode_arguments(int *argc,char ***argv) {
+    int count=0;wchar_t **wide=CommandLineToArgvW(GetCommandLineW(),&count);
+    if(!wide) return -1;
+    desktop_argv=calloc((size_t)count+1,sizeof(*desktop_argv));desktop_argc=count;
+    if(!desktop_argv) {LocalFree(wide);desktop_argc=0;return -1;}
+    int ok=1;
+    for(int i=0;i<count;i++) {
+        int bytes=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,wide[i],-1,NULL,0,NULL,NULL);
+        desktop_argv[i]=bytes>0?malloc((size_t)bytes):NULL;
+        if(!desktop_argv[i] || !WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,wide[i],-1,
+            desktop_argv[i],bytes,NULL,NULL)) {ok=0;break;}
+    }
+    LocalFree(wide);
+    if(!ok) {free_desktop_argv();desktop_argv=NULL;desktop_argc=0;return -1;}
+    if(atexit(free_desktop_argv)!=0) {free_desktop_argv();return -1;}
+    *argc=count;*argv=desktop_argv;return 0;
+}
+#endif
+
 int main(int argc, char **argv)
 {
+#ifdef _WIN32
+    if(unicode_arguments(&argc,&argv)!=0) return 1;
+#endif
     int guard_result=cb_scroll_guard_entry(argc,argv);
     if(guard_result>=0) return guard_result;
     /*
@@ -963,6 +1020,9 @@ int main(int argc, char **argv)
      * 不接受未知选项，也不允许同时指定监听和连接模式。
      */
     for (int i = 1; i < argc; ++i) {
+        if(strcmp(argv[i],"--desktop-control")==0 && !desktop_control) {
+            desktop_control=1;continue;
+        }
         if(strcmp(argv[i],"--scroll-lines")==0 && !scroll_enabled) {
             scroll_enabled=1;continue;
         }
@@ -1065,7 +1125,7 @@ int main(int argc, char **argv)
                address, port);
     }
 
-    while (!stop_requested) {
+    while (!should_stop()) {
         cache_tick();
         cb_socket connection = CB_INVALID;
 
@@ -1099,7 +1159,7 @@ int main(int argc, char **argv)
 
         if (authenticate(connection, listener_mode, key) != 0) {
             fprintf(stderr, "Authentication failed or timed out.\n");
-        } else if (!stop_requested) {
+        } else if (!should_stop()) {
             run_session(connection);
         }
 
@@ -1111,7 +1171,9 @@ int main(int argc, char **argv)
     }
 
 cleanup:
-    cb_scroll_close();
+    if(desktop_control) {
+        if(cb_scroll_close_wait()!=0) exit_code=1;
+    } else cb_scroll_close();
     cb_net_close(listener);
     cb_keyboard_close();
     cb_platform_close();

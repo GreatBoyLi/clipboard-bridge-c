@@ -16,6 +16,7 @@ mkdir -p build
 # 开启编译警告，把警告当作错误处理。
 clang \
   -std=c11 \
+  -mmacosx-version-min=12.0 \
   -Wall -Wextra -Werror \
   -O2 \
   -fobjc-arc \
@@ -38,3 +39,32 @@ clang \
   -o build/clipboard-bridge
 
 echo "Mac 程序已生成：$PROJECT_DIR/build/clipboard-bridge"
+
+
+# 打包原生菜单栏与原 worker；日常双击 .app 即可，不注册登录启动。
+APP="$PROJECT_DIR/build/Clipboard Bridge.app"
+mkdir -p "$APP/Contents/MacOS"
+clang -std=c11 -mmacosx-version-min=12.0 -Wall -Wextra -Werror -O2 -fobjc-arc \
+  -framework AppKit -framework ApplicationServices \
+  src/desktop_macos.m -o "$APP/Contents/MacOS/ClipboardBridge"
+cp build/clipboard-bridge "$APP/Contents/MacOS/clipboard-bridge"
+cat > "$APP/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>net.greatboyli.clipboardbridge</string>
+<key>CFBundleName</key><string>Clipboard Bridge</string>
+<key>CFBundleDisplayName</key><string>Clipboard Bridge</string>
+<key>CFBundleExecutable</key><string>ClipboardBridge</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>1.1</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSMinimumSystemVersion</key><string>12.0</string>
+<key>LSUIElement</key><true/>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSPrincipalClass</key><string>NSApplication</string>
+</dict></plist>
+PLIST
+# 有本机签名身份时可通过 CB_SIGN_IDENTITY 指定，否则使用本地 ad-hoc 签名。
+codesign --force --deep --sign "${CB_SIGN_IDENTITY:--}" "$APP"
+echo "Mac 菜单栏程序：$APP"

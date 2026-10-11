@@ -45,6 +45,24 @@ cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT ^
 
 if errorlevel 1 goto failed
 
+REM Native tray supervises the existing worker; keep both executables together.
+cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /D_CRT_SECURE_NO_WARNINGS /D_WIN32_WINNT=0x0601 /I..\src ^
+  ..\src\desktop_windows.c /Fe:clipboard-bridge-tray.exe ^
+  /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib comdlg32.lib bcrypt.lib advapi32.lib
+if errorlevel 1 goto failed
+
+REM Desktop credential validation and private stdin control pipe tests.
+cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /I..\src ^
+  ..\tests\test_desktop_pairing.c /Fe:test_desktop_pairing.exe
+if errorlevel 1 goto failed
+test_desktop_pairing.exe
+if errorlevel 1 goto failed
+cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /I..\src ^
+  ..\tests\test_desktop_control.c /Fe:test_desktop_control.exe
+if errorlevel 1 goto failed
+test_desktop_control.exe
+if errorlevel 1 goto failed
+
 REM Cache cleanup uses an isolated temporary directory, never real caches.
 cl /nologo /std:c11 /utf-8 /W4 /WX /O2 /MT /D_CRT_SECURE_NO_WARNINGS /D_WIN32_WINNT=0x0601 /I..\src ^
   ..\src\protocol.c ..\tests\test_cache.c /Fe:test_cache.exe /link bcrypt.lib
@@ -146,7 +164,8 @@ if errorlevel 1 goto failed
 
 popd
 echo [OK] Windows build and tests completed.
-echo [OK] Program: build\clipboard-bridge.exe
+echo [OK] Tray: build\clipboard-bridge-tray.exe
+echo [OK] Worker: build\clipboard-bridge.exe (keep beside tray)
 exit /b 0
 
 :failed
