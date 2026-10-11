@@ -111,8 +111,8 @@ static NSData *ensure_pairing(NSString *path) {
     entry.target=self;entry.enabled=enabled;[self.menu addItem:entry];
 }
 - (void)rebuildMenu {
-    NSString *prefix=self.item.button.image?@"":@"CB";
-    self.item.button.title=[prefix stringByAppendingString:[self.status isEqualToString:@"已连接"]?@" ●":@" ○"];
+    // 菜单栏只显示应用图标，连接状态放在菜单和悬停提示中。
+    self.item.button.title=self.item.button.image?@"":@"CB";
     self.item.button.toolTip=[NSString stringWithFormat:@"Clipboard Bridge：%@",self.status];
     self.menu=[NSMenu new];self.menu.autoenablesItems=NO;
     [self add:[NSString stringWithFormat:@"状态：%@",self.status] action:NULL enabled:NO];
