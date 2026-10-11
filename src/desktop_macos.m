@@ -57,6 +57,9 @@ static NSData *ensure_pairing(NSString *path) {
     bytes[64]='\n';return [NSData dataWithBytes:bytes length:65];
 }
 
+/* 本应用配置使用标准域；以自身 bundle ID 创建 suite 会被 macOS 拒绝。 */
+static NSUserDefaults *menu_preferences(void) {return NSUserDefaults.standardUserDefaults;}
+
 /* 菜单栏只负责设置和生命周期；剪贴板和输入仍在原 worker 主线程处理。 */
 @interface BridgeMenu : NSObject <NSApplicationDelegate>
 @property NSStatusItem *item;
@@ -89,7 +92,7 @@ static NSData *ensure_pairing(NSString *path) {
         [self alert:@"程序已经运行或配置目录不可用" message:@"请查看菜单栏中的 CB 图标。"];
         [NSApp terminate:nil];return;
     }
-    self.settings=[[NSUserDefaults alloc] initWithSuiteName:@"net.greatboyli.clipboardbridge"];
+    self.settings=menu_preferences();
     [self.settings registerDefaults:@{@"port":@"47321",@"keyboard":@YES,@"three":@YES,@"scroll":@YES,@"caps":@YES}];
     self.status=@"未连接";self.detail=@"";
     self.item=[[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
@@ -219,7 +222,7 @@ static NSData *ensure_pairing(NSString *path) {
     if(![self.settings synchronize]) {
         if(previousHost) [self.settings setObject:previousHost forKey:@"host"];else [self.settings removeObjectForKey:@"host"];
         if(previousPort) [self.settings setObject:previousPort forKey:@"port"];else [self.settings removeObjectForKey:@"port"];
-        [self alert:@"配置保存失败" message:@"主机地址和端口未保存，请检查用户配置目录权限。"] ;return;
+        [self alert:@"配置保存失败" message:@"无法写入应用配置，主机地址和端口未保存。此错误与辅助功能授权无关。"] ;return;
     }
     if(self.worker) {self.restartPending=YES;[self stopWorker];}
     else if([[NSFileManager defaultManager] fileExistsAtPath:[self keyPath]]) [self connect:nil];
