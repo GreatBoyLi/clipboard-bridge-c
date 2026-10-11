@@ -45,3 +45,7 @@ Windows 有暂停/恢复和移除设备功能；移除后需要重新配对。Ma
 ## 验证范围
 
 `bash scripts/test_desktop_mac.sh` 验证凭据校验、退出管道、真实 loopback 身份选择、会话基线与清理；测试不接触用户剪贴板或按键。Mac 构建包含菜单栏与 `.app` 签名检查。Windows 构建脚本包含凭据和控制管道测试；Windows 托盘的原生编译、实际配对和滚动恢复仍需在 Windows 验收。
+
+## 安装包
+
+Mac 可运行 `bash scripts/package_mac.sh 1.1.0` 生成拖拽安装的 DMG。打包在临时目录完成，不替换当前 build 应用；产物在 dist。发布与签名说明见 [安装包与 Release](release.md)。
